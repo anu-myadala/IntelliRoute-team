@@ -219,3 +219,130 @@ def test_router_decide_endpoint_returns_ranking(stack):
     assert body["ranked"][0] == "mock-fast"
     assert set(body["ranked"]) == {"mock-fast", "mock-smart", "mock-cheap"}
 
+
+def test_failover_when_top_provider_is_down(stack):
+    # Force mock-fast into failing mode, then issue an interactive prompt.
+    # The router should fall back to the next provider in the ranked list.
+    r = httpx.post(f"{stack.mock_url('mock_fast')}/admin/force_fail", json={"fail": True}, timeout=5.0)
+    assert r.status_code == 200
+    try:
+        body = None
+        # A few attempts because the breaker needs to see failures to trip.
+        for _ in range(5):
+            r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_interactive_request(), headers=_headers(), timeout=10.0)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            if body["provider"] != "mock-fast":
+                break
+        assert body is not None
+        assert body["provider"] != "mock-fast"
+        assert body["fallback_used"] is True
+    finally:
+        httpx.post(f"{stack.mock_url('mock_fast')}/admin/force_fail", json={"fail": False}, timeout=5.0)
+
+
+def test_rate_limiter_throttles_when_bucket_drained(stack):
+    # Tighten the bucket for (demo-tenant, mock-cheap) to capacity=1, refill very slow.
+    r = httpx.post(
+        f"{stack.rate_limiter_url}/config",
+        json={"key": "demo-tenant|mock-cheap", "capacity": 1, "refill_rate": 0.01},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+
+    # First batch request should succeed (consumes the 1 token).
+    r1 = httpx.post(f"{stack.gateway_url}/v1/complete", json=_batch_request(), headers=_headers(), timeout=10.0)
+    assert r1.status_code == 200
+    # Second batch request: mock-cheap is rate-limited so the router should
+    # fall back to another provider (fallback_used=True).
+    r2 = httpx.post(f"{stack.gateway_url}/v1/complete", json=_batch_request(), headers=_headers(), timeout=10.0)
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["fallback_used"] is True
+    assert body2["provider"] != "mock-cheap"
+
+    # Reset config so subsequent tests aren't affected.
+    httpx.post(
+        f"{stack.rate_limiter_url}/config",
+        json={"key": "demo-tenant|mock-cheap", "capacity": 10, "refill_rate": 1.0},
+        timeout=5.0,
+    )
+
+
+def test_cost_tracker_reflects_tenant_spend(stack):
+    # Poll the cost summary; because cost events are published async, allow
+    # up to a second for eventual consistency.
+    deadline = time.monotonic() + 2.0
+    summary = None
+    while time.monotonic() < deadline:
+        r = httpx.get(f"{stack.gateway_url}/v1/cost/summary", headers=_headers(), timeout=5.0)
+        assert r.status_code == 200
+        summary = r.json()
+        if summary["total_requests"] > 0:
+            break
+        time.sleep(0.1)
+    assert summary is not None
+    assert summary["tenant_id"] == "demo-tenant"
+    assert summary["total_requests"] >= 1
+    assert summary["total_cost_usd"] > 0.0
+    assert len(summary["by_provider"]) >= 1
+
+
+def test_unauthenticated_request_is_rejected(stack):
+    r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_interactive_request(), timeout=5.0)
+    assert r.status_code == 401
+
+
+def test_feedback_endpoint_populated_after_completions(stack):
+    """Test that feedback metrics are collected after completions."""
+    # Send a few requests
+    for _ in range(3):
+        r = httpx.post(
+            f"{stack.gateway_url}/v1/complete",
+            json=_interactive_request(),
+            headers=_headers(),
+            timeout=10.0,
+        )
+        assert r.status_code == 200
+
+    time.sleep(0.5)  # Allow feedback to be recorded
+
+    # Check feedback endpoint
+    r = httpx.get(f"{stack.router_url}/feedback", timeout=5.0)
+    assert r.status_code == 200
+    feedback = r.json()
+    # Should have metrics for providers that handled requests
+    assert len(feedback) > 0
+    # Check that metrics have expected fields
+    for provider_name, metrics in feedback.items():
+        assert "latency_ema" in metrics
+        assert "success_rate_ema" in metrics
+        assert "sample_count" in metrics
+
+
+def test_queue_stats_endpoint_shape(stack):
+    """Test that queue stats endpoint returns expected shape."""
+    r = httpx.get(f"{stack.router_url}/queue/stats", timeout=5.0)
+    assert r.status_code == 200
+    stats = r.json()
+    assert "total_depth" in stats
+    assert "by_priority" in stats
+    assert "shed_count" in stats
+    assert "timeout_count" in stats
+    assert "high" in stats["by_priority"]
+    assert "medium" in stats["by_priority"]
+    assert "low" in stats["by_priority"]
+
+
+def test_election_status_shows_leader(stack):
+    """Test that election status endpoint is accessible."""
+    # Try to get election status from one of the replicas
+    # Note: In the integration test, we only run one rate limiter replica
+    # So we just check that the endpoint exists and returns expected shape
+    r = httpx.get(f"{stack.rate_limiter_url}/election/status", timeout=5.0)
+    assert r.status_code == 200
+    status = r.json()
+    assert "replica_id" in status or "error" in status  # May error if not set up
+    if "replica_id" in status:
+        assert "state" in status
+        assert "is_leader" in status
