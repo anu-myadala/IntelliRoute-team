@@ -1022,13 +1022,13 @@
 
             let metaHtml = '';
             if (meta.provider) {
-                metaHtml += `<span class="meta-badge">🔗 ${meta.provider}</span>`;
+                metaHtml += `<span class="meta-badge">🔗 ${escapeHtml(meta.provider)}</span>`;
             }
             if (meta.latency) {
-                metaHtml += `<span class="meta-badge">⏱ ${meta.latency}ms</span>`;
+                metaHtml += `<span class="meta-badge">⏱ ${escapeHtml(String(meta.latency))}ms</span>`;
             }
             if (meta.attempts) {
-                metaHtml += `<span class="meta-badge">🔄 ${meta.attempts} attempt(s)</span>`;
+                metaHtml += `<span class="meta-badge">🔄 ${escapeHtml(String(meta.attempts))} attempt(s)</span>`;
             }
 
             div.innerHTML = `
@@ -1154,12 +1154,14 @@
             state.providers.forEach(p => {
                 const item = document.getElementById(`rank-${p}`);
                 const health = document.getElementById(`health-${p}`);
-                item.classList.remove('selected', 'failed');
-                health.classList.remove('active');
+                if (item) item.classList.remove('selected', 'failed');
+                if (health) health.classList.remove('active');
             });
 
-            document.getElementById(`rank-${provider}`).classList.add('selected');
-            document.getElementById(`health-${provider}`).classList.add('active');
+            const rank = document.getElementById(`rank-${provider}`);
+            const health = document.getElementById(`health-${provider}`);
+            if (rank) rank.classList.add('selected');
+            if (health) health.classList.add('active');
         }
 
         async function updateMetrics() {
