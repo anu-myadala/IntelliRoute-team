@@ -940,8 +940,13 @@
             updateMetrics();
         }
 
+        let sendInFlight = false;
+
         async function sendMessage() {
+            if (sendInFlight) return;
+
             const input = document.getElementById('messageInput');
+            const sendBtn = document.getElementById('sendBtn');
             const content = input.value.trim();
             if (!content) return;
 
@@ -950,7 +955,10 @@
             // Add user message
             addMessage('user', content);
             input.value = '';
-            document.getElementById('sendBtn').classList.add('loading');
+            sendInFlight = true;
+            sendBtn.disabled = true;
+            input.disabled = true;
+            sendBtn.classList.add('loading');
 
             // Animate flow
             animateFlow();
@@ -988,9 +996,14 @@
                 console.error('Error:', error);
                 addMessage('assistant', `Error: ${error.message}`);
                 addEvent('error', `Request failed: ${error.message}`);
+            } finally {
+                sendInFlight = false;
+                sendBtn.disabled = false;
+                input.disabled = false;
+                sendBtn.classList.remove('loading');
+                input.focus();
             }
 
-            document.getElementById('sendBtn').classList.remove('loading');
             updateMetrics();
         }
 
@@ -1017,6 +1030,9 @@
 
         function addMessage(role, content, meta = {}) {
             const container = document.getElementById('messagesContainer');
+            const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+            const wasAtBottom = distanceFromBottom < 40;
+
             const div = document.createElement('div');
             div.className = `message ${role}`;
 
@@ -1037,7 +1053,9 @@
             `;
 
             container.appendChild(div);
-            container.scrollTop = container.scrollHeight;
+            if (wasAtBottom || role === 'user') {
+                container.scrollTop = container.scrollHeight;
+            }
 
             state.messages.push({ role, content, meta });
         }
