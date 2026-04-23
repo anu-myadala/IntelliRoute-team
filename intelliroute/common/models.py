@@ -32,7 +32,10 @@ class ChatMessage(BaseModel):
 class CompletionRequest(BaseModel):
     """A unified request format that mirrors the common shape of LLM APIs."""
 
-    tenant_id: str = Field(..., description="Identifier of the calling tenant/team")
+    tenant_id: str = Field(
+        default="",
+        description="Tenant/team id. Clients may omit this; the gateway overrides it from the authenticated API key.",
+    )
     messages: list[ChatMessage]
     max_tokens: int = 256
     temperature: float = 0.7
