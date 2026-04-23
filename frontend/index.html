@@ -38,6 +38,7 @@
         .container {
             display: grid;
             grid-template-columns: 30% 40% 30%;
+            grid-template-rows: 1fr;
             height: 100vh;
             gap: 16px;
             padding: 16px;
@@ -58,6 +59,8 @@
             display: flex;
             flex-direction: column;
             height: 100%;
+            min-height: 0;
+            overflow: hidden;
             gap: 16px;
         }
 
@@ -81,6 +84,7 @@
 
         .messages-container {
             flex: 1;
+            min-height: 0;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
@@ -161,6 +165,7 @@
         }
 
         .input-area {
+            flex-shrink: 0;
             display: flex;
             flex-direction: column;
             gap: 8px;
@@ -935,8 +940,13 @@
             updateMetrics();
         }
 
+        let sendInFlight = false;
+
         async function sendMessage() {
+            if (sendInFlight) return;
+
             const input = document.getElementById('messageInput');
+            const sendBtn = document.getElementById('sendBtn');
             const content = input.value.trim();
             if (!content) return;
 
@@ -945,7 +955,10 @@
             // Add user message
             addMessage('user', content);
             input.value = '';
-            document.getElementById('sendBtn').classList.add('loading');
+            sendInFlight = true;
+            sendBtn.disabled = true;
+            input.disabled = true;
+            sendBtn.classList.add('loading');
 
             // Animate flow
             animateFlow();
@@ -965,7 +978,7 @@
 
                 if (!response.ok) {
                     const errData = await response.json().catch(() => ({}));
-                    throw new Error(errData.detail || `API error: ${response.status}`);
+                    throw new Error(formatApiError(errData, response.status));
                 }
                 const data = await response.json();
 
@@ -983,10 +996,25 @@
                 console.error('Error:', error);
                 addMessage('assistant', `Error: ${error.message}`);
                 addEvent('error', `Request failed: ${error.message}`);
+            } finally {
+                sendInFlight = false;
+                sendBtn.disabled = false;
+                input.disabled = false;
+                sendBtn.classList.remove('loading');
+                input.focus();
             }
 
-            document.getElementById('sendBtn').classList.remove('loading');
             updateMetrics();
+        }
+
+        function formatApiError(errData, status) {
+            const detail = errData && errData.detail;
+            if (typeof detail === 'string') return detail;
+            if (Array.isArray(detail)) {
+                return detail.map(d => d && d.msg ? d.msg : JSON.stringify(d)).join('; ');
+            }
+            if (detail && typeof detail === 'object') return JSON.stringify(detail);
+            return `API error: ${status}`;
         }
 
         function animateFlow() {
@@ -1002,18 +1030,21 @@
 
         function addMessage(role, content, meta = {}) {
             const container = document.getElementById('messagesContainer');
+            const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+            const wasAtBottom = distanceFromBottom < 40;
+
             const div = document.createElement('div');
             div.className = `message ${role}`;
 
             let metaHtml = '';
             if (meta.provider) {
-                metaHtml += `<span class="meta-badge">🔗 ${meta.provider}</span>`;
+                metaHtml += `<span class="meta-badge">🔗 ${escapeHtml(meta.provider)}</span>`;
             }
             if (meta.latency) {
-                metaHtml += `<span class="meta-badge">⏱ ${meta.latency}ms</span>`;
+                metaHtml += `<span class="meta-badge">⏱ ${escapeHtml(String(meta.latency))}ms</span>`;
             }
             if (meta.attempts) {
-                metaHtml += `<span class="meta-badge">🔄 ${meta.attempts} attempt(s)</span>`;
+                metaHtml += `<span class="meta-badge">🔄 ${escapeHtml(String(meta.attempts))} attempt(s)</span>`;
             }
 
             div.innerHTML = `
@@ -1022,7 +1053,9 @@
             `;
 
             container.appendChild(div);
-            container.scrollTop = container.scrollHeight;
+            if (wasAtBottom || role === 'user') {
+                container.scrollTop = container.scrollHeight;
+            }
 
             state.messages.push({ role, content, meta });
         }
@@ -1139,12 +1172,14 @@
             state.providers.forEach(p => {
                 const item = document.getElementById(`rank-${p}`);
                 const health = document.getElementById(`health-${p}`);
-                item.classList.remove('selected', 'failed');
-                health.classList.remove('active');
+                if (item) item.classList.remove('selected', 'failed');
+                if (health) health.classList.remove('active');
             });
 
-            document.getElementById(`rank-${provider}`).classList.add('selected');
-            document.getElementById(`health-${provider}`).classList.add('active');
+            const rank = document.getElementById(`rank-${provider}`);
+            const health = document.getElementById(`health-${provider}`);
+            if (rank) rank.classList.add('selected');
+            if (health) health.classList.add('active');
         }
 
         async function updateMetrics() {
