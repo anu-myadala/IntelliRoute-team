@@ -965,7 +965,7 @@
 
                 if (!response.ok) {
                     const errData = await response.json().catch(() => ({}));
-                    throw new Error(errData.detail || `API error: ${response.status}`);
+                    throw new Error(formatApiError(errData, response.status));
                 }
                 const data = await response.json();
 
@@ -987,6 +987,16 @@
 
             document.getElementById('sendBtn').classList.remove('loading');
             updateMetrics();
+        }
+
+        function formatApiError(errData, status) {
+            const detail = errData && errData.detail;
+            if (typeof detail === 'string') return detail;
+            if (Array.isArray(detail)) {
+                return detail.map(d => d && d.msg ? d.msg : JSON.stringify(d)).join('; ');
+            }
+            if (detail && typeof detail === 'object') return JSON.stringify(detail);
+            return `API error: ${status}`;
         }
 
         function animateFlow() {
