@@ -9,6 +9,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from .env import load_dotenv_if_present
+
+load_dotenv_if_present()
+
+TRUTHY = {"1", "true", "yes", "on"}
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -17,21 +23,40 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in TRUTHY
+
+
 @dataclass
 class Settings:
-    # Service ports
     gateway_port: int = _env_int("INTELLIROUTE_GATEWAY_PORT", 8000)
     router_port: int = _env_int("INTELLIROUTE_ROUTER_PORT", 8001)
     rate_limiter_port: int = _env_int("INTELLIROUTE_RATE_LIMITER_PORT", 8002)
     cost_tracker_port: int = _env_int("INTELLIROUTE_COST_TRACKER_PORT", 8003)
     health_monitor_port: int = _env_int("INTELLIROUTE_HEALTH_MONITOR_PORT", 8004)
 
-    # Mock LLM providers (spun up on these ports for local dev / tests)
     mock_fast_port: int = _env_int("INTELLIROUTE_MOCK_FAST_PORT", 9001)
     mock_smart_port: int = _env_int("INTELLIROUTE_MOCK_SMART_PORT", 9002)
     mock_cheap_port: int = _env_int("INTELLIROUTE_MOCK_CHEAP_PORT", 9003)
 
     host: str = os.environ.get("INTELLIROUTE_HOST", "127.0.0.1")
+
+    gemini_api_key: str = os.environ.get("GEMINI_API_KEY", "")
+    groq_api_key: str = os.environ.get("GROQ_API_KEY", "")
+    gemini_model: str = os.environ.get("INTELLIROUTE_GEMINI_MODEL", "gemini-2.5-flash")
+    groq_model: str = os.environ.get("INTELLIROUTE_GROQ_MODEL", "llama-3.3-70b-versatile")
+    provider_timeout_s: float = _env_float("INTELLIROUTE_PROVIDER_TIMEOUT_S", 30.0)
+    use_mock_providers: bool = _env_bool("INTELLIROUTE_USE_MOCKS", False)
 
     @property
     def router_url(self) -> str:
@@ -48,6 +73,5 @@ class Settings:
     @property
     def health_monitor_url(self) -> str:
         return f"http://{self.host}:{self.health_monitor_port}"
-
 
 settings = Settings()

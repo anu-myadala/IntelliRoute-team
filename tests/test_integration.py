@@ -49,7 +49,7 @@ def _wait_ready(url: str, timeout: float = 10.0) -> None:
         except Exception as exc:
             last_err = exc
         time.sleep(0.1)
-    raise RuntimeError(f"service at {url} did not become ready: {last_err}")
+    raise RuntimeError(f"service at {url} did not become ready within {timeout:.1f}s: {last_err}")
 
 
 class _Stack:
@@ -92,9 +92,38 @@ class _Stack:
         p = subprocess.Popen(cmd, env=env, cwd=str(ROOT))
         self.procs.append(p)
 
+    def _spawn_and_wait(
+        self,
+        module: str,
+        port: int,
+        extra_env: dict | None = None,
+        *,
+        ready_timeout: float = 30.0,
+    ) -> None:
+        self._spawn_uvicorn(module, port, extra_env)
+        proc = self.procs[-1]
+        url = f"http://127.0.0.1:{port}/health"
+        deadline = time.monotonic() + ready_timeout
+
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"service {module} on {url} exited early with code {proc.returncode}"
+                )
+            try:
+                r = httpx.get(url, timeout=1.0)
+                if r.status_code == 200:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+        raise RuntimeError(
+            f"service {module} at {url} did not become ready within {ready_timeout:.1f}s"
+        )
+
     def start(self) -> None:
-        # Mock providers with distinct personalities.
-        self._spawn_uvicorn(
+        self._spawn_and_wait(
             "intelliroute.mock_provider.main:app",
             self.ports["mock_fast"],
             {
@@ -103,7 +132,7 @@ class _Stack:
                 "MOCK_FAILURE_RATE": "0.0", "MOCK_COST_PER_1K": "0.002",
             },
         )
-        self._spawn_uvicorn(
+        self._spawn_and_wait(
             "intelliroute.mock_provider.main:app",
             self.ports["mock_smart"],
             {
@@ -112,7 +141,7 @@ class _Stack:
                 "MOCK_FAILURE_RATE": "0.0", "MOCK_COST_PER_1K": "0.02",
             },
         )
-        self._spawn_uvicorn(
+        self._spawn_and_wait(
             "intelliroute.mock_provider.main:app",
             self.ports["mock_cheap"],
             {
@@ -121,18 +150,11 @@ class _Stack:
                 "MOCK_FAILURE_RATE": "0.0", "MOCK_COST_PER_1K": "0.0003",
             },
         )
-        self._spawn_uvicorn("intelliroute.rate_limiter.main:app", self.ports["rate_limiter"])
-        self._spawn_uvicorn("intelliroute.cost_tracker.main:app", self.ports["cost_tracker"])
-        self._spawn_uvicorn("intelliroute.health_monitor.main:app", self.ports["health_monitor"])
-        self._spawn_uvicorn("intelliroute.router.main:app", self.ports["router"])
-        self._spawn_uvicorn("intelliroute.gateway.main:app", self.ports["gateway"])
-
-        for name in [
-            "mock_fast", "mock_smart", "mock_cheap",
-            "rate_limiter", "cost_tracker", "health_monitor",
-            "router", "gateway",
-        ]:
-            _wait_ready(f"http://127.0.0.1:{self.ports[name]}/health", timeout=15.0)
+        self._spawn_and_wait("intelliroute.rate_limiter.main:app", self.ports["rate_limiter"])
+        self._spawn_and_wait("intelliroute.cost_tracker.main:app", self.ports["cost_tracker"])
+        self._spawn_and_wait("intelliroute.health_monitor.main:app", self.ports["health_monitor"])
+        self._spawn_and_wait("intelliroute.router.main:app", self.ports["router"])
+        self._spawn_and_wait("intelliroute.gateway.main:app", self.ports["gateway"])
 
     def stop(self) -> None:
         for p in self.procs:

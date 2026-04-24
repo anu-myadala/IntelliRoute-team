@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional
+from typing import Any, Optional
 
 from ..common.models import CompletionRequest, Intent
 
@@ -49,7 +49,7 @@ class QueuedRequest:
     enqueued_at: float
     request_id: str
     request: CompletionRequest
-    future: asyncio.Future
+    future: Optional[asyncio.Future[Any]] = None
 
 
 @dataclass
@@ -77,9 +77,24 @@ class RequestQueue:
             Priority.LOW: [],
         }
         self._lock = threading.Lock()
-        self._event = asyncio.Event()
+        self._event = threading.Event()
         self._shed_count = 0
         self._timeout_count = 0
+
+    @staticmethod
+    def _maybe_create_future() -> Optional[asyncio.Future[Any]]:
+        """Create a Future only when running inside an active event loop.
+
+        Python 3.14 no longer provides an implicit current event loop in plain
+        synchronous contexts. Queue tests construct and enqueue requests from
+        synchronous code, so future creation must be deferred unless the caller
+        is already inside an asyncio loop.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        return loop.create_future()
 
     def try_enqueue(
         self, request_id: str, req: CompletionRequest, priority: Priority
@@ -125,13 +140,12 @@ class RequestQueue:
                 )
 
             # Enqueue
-            future: asyncio.Future = asyncio.Future()
             queued = QueuedRequest(
                 priority=priority,
                 enqueued_at=time.monotonic(),
                 request_id=request_id,
                 request=req,
-                future=future,
+                future=self._maybe_create_future(),
             )
             self._queues[priority].append(queued)
             self._event.set()
@@ -151,10 +165,9 @@ class RequestQueue:
                         if not any(self._queues[p] for p in Priority):
                             self._event.clear()
                         return item
-            try:
-                await asyncio.wait_for(self._event.wait(), timeout=0.1)
-            except asyncio.TimeoutError:
+            if self._event.is_set():
                 continue
+            await asyncio.sleep(0.1)
         return None
 
     def record_timeout(self, request_id: str) -> None:

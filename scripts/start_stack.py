@@ -1,12 +1,4 @@
-"""Launch the entire IntelliRoute stack as subprocesses.
-
-Each service runs in its own ``python -m uvicorn`` subprocess so the
-three mock providers can read their distinct env vars cleanly. Press
-Ctrl-C to stop all services.
-
-Usage:
-    python scripts/start_stack.py
-"""
+"""Launch the entire IntelliRoute stack as subprocesses."""
 from __future__ import annotations
 
 import os
@@ -16,8 +8,12 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+import httpx
 
+from intelliroute.common.env import load_dotenv_if_present
+
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv_if_present()
 
 SERVICES = [
     {
@@ -77,49 +73,93 @@ SERVICES = [
             "RATE_LIMITER_PEERS": "rl-0=http://127.0.0.1:8002,rl-1=http://127.0.0.1:8012,rl-2=http://127.0.0.1:8022",
         },
     },
-    {"module": "intelliroute.cost_tracker.main:app",   "port_env": "INTELLIROUTE_COST_TRACKER_PORT",   "default_port": 8003, "env": {}},
+    {"module": "intelliroute.cost_tracker.main:app", "port_env": "INTELLIROUTE_COST_TRACKER_PORT", "default_port": 8003, "env": {}},
     {"module": "intelliroute.health_monitor.main:app", "port_env": "INTELLIROUTE_HEALTH_MONITOR_PORT", "default_port": 8004, "env": {}},
-    {"module": "intelliroute.router.main:app",         "port_env": "INTELLIROUTE_ROUTER_PORT",         "default_port": 8001, "env": {}},
-    {"module": "intelliroute.gateway.main:app",        "port_env": "INTELLIROUTE_GATEWAY_PORT",        "default_port": 8000, "env": {}},
+    {"module": "intelliroute.router.main:app", "port_env": "INTELLIROUTE_ROUTER_PORT", "default_port": 8001, "env": {}},
+    {"module": "intelliroute.gateway.main:app", "port_env": "INTELLIROUTE_GATEWAY_PORT", "default_port": 8000, "env": {}},
 ]
+
+
+def _should_use_external_providers() -> bool:
+    using_keys = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GROQ_API_KEY"))
+    force_mocks = os.environ.get("INTELLIROUTE_USE_MOCKS", "").strip().lower() in {"1", "true", "yes", "on"}
+    return using_keys and not force_mocks
+
+
+def _wait_ready(proc: subprocess.Popen, url: str, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error: str | None = None
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"service for {url} exited early with code {proc.returncode}")
+        try:
+            response = httpx.get(url, timeout=1.0)
+            if response.status_code == 200:
+                return
+            last_error = f"HTTP {response.status_code}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(0.2)
+    raise RuntimeError(f"service at {url} did not become ready within {timeout:.1f}s: {last_error}")
+
+
+def _spawn_service(
+    procs: list[subprocess.Popen],
+    base_env: dict[str, str],
+    svc: dict,
+    host: str,
+) -> None:
+    port = int(os.environ.get(svc["port_env"], svc["default_port"]))
+    env = base_env.copy()
+    env.update(svc["env"])
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        svc["module"],
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--log-level",
+        "info",
+    ]
+    print(f"starting {svc['module']} on :{port}")
+    proc = subprocess.Popen(cmd, env=env, cwd=str(ROOT))
+    procs.append(proc)
+    _wait_ready(proc, f"http://{host}:{port}/health")
 
 
 def main() -> int:
     procs: list[subprocess.Popen] = []
     base_env = os.environ.copy()
     base_env["PYTHONPATH"] = str(ROOT)
-
+    host = os.environ.get("INTELLIROUTE_HOST", "127.0.0.1")
+    use_external = _should_use_external_providers()
+    services = SERVICES[3:] if use_external else SERVICES
+    frontend_port = int(os.environ.get("INTELLIROUTE_FRONTEND_PORT", "3000"))
+    frontend_dir = str(ROOT / "frontend")
     try:
-        for svc in SERVICES:
-            port = int(os.environ.get(svc["port_env"], svc["default_port"]))
-            env = base_env.copy()
-            env.update(svc["env"])
-            cmd = [
-                sys.executable, "-m", "uvicorn", svc["module"],
-                "--host", os.environ.get("INTELLIROUTE_HOST", "127.0.0.1"),
-                "--port", str(port),
-                "--log-level", "info",
-            ]
-            print(f"starting {svc['module']} on :{port}")
-            procs.append(subprocess.Popen(cmd, env=env, cwd=str(ROOT)))
-            time.sleep(0.15)
-
-        # Start a simple HTTP server for the frontend UI
-        frontend_port = int(os.environ.get("INTELLIROUTE_FRONTEND_PORT", "3000"))
-        frontend_dir = str(ROOT / "frontend")
+        for svc in services:
+            _spawn_service(procs, base_env, svc, host)
         if os.path.isdir(frontend_dir):
             frontend_cmd = [
-                sys.executable, "-m", "http.server",
-                str(frontend_port), "--directory", frontend_dir,
-                "--bind", os.environ.get("INTELLIROUTE_HOST", "127.0.0.1"),
+                sys.executable,
+                "-m",
+                "http.server",
+                str(frontend_port),
+                "--directory",
+                frontend_dir,
+                "--bind",
+                host,
             ]
             print(f"starting frontend on :{frontend_port}")
             procs.append(subprocess.Popen(frontend_cmd, env=base_env, cwd=str(ROOT)))
-
-        print(f"\nIntelliRoute stack running.")
-        print(f"  Gateway:    http://127.0.0.1:8000")
-        print(f"  Frontend:   http://127.0.0.1:{frontend_port}")
-        print(f"  Press Ctrl-C to stop.\n")
+        print("\nIntelliRoute stack running.")
+        print(f"  Providers:  {'external (Gemini/Groq)' if use_external else 'mock demo providers'}")
+        print(f"  Gateway:    http://{host}:8000")
+        print(f"  Frontend:   http://{host}:{frontend_port}")
+        print("  Press Ctrl-C to stop.\n")
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:

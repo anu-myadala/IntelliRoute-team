@@ -66,6 +66,7 @@ class ProviderInfo(BaseModel):
     name: str                    # e.g. "mock-openai"
     url: str                     # base URL of the provider service
     model: str                   # model identifier
+    provider_type: str = "mock" # mock / groq / gemini
     # Capability scores in [0, 1]. Higher = better at that intent.
     capability: dict[str, float] = Field(default_factory=dict)
     # Cost in USD per 1K tokens (input + output averaged for simplicity)
