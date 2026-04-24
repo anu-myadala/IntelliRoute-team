@@ -38,6 +38,7 @@ from ..common.models import (
 from .feedback import CompletionOutcome, FeedbackCollector
 from .intent import classify
 from .policy import RoutingPolicy
+from .provider_clients import ProviderCallError, call_provider
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
 
@@ -66,7 +67,7 @@ async def _startup() -> None:
     global _http, _worker_tasks
     _http = httpx.AsyncClient(timeout=5.0)
     # Auto-register the three mock providers if the env vars are set.
-    _bootstrap_mock_registry()
+    _bootstrap_registry()
     # Start queue worker tasks
     for i in range(_WORKER_COUNT):
         task = asyncio.create_task(_queue_worker(i))
@@ -85,13 +86,13 @@ async def _shutdown() -> None:
     await asyncio.gather(*_worker_tasks, return_exceptions=True)
 
 
-def _bootstrap_mock_registry() -> None:
-    """Register the three canonical mock providers from env config."""
-    bootstrap = [
+def _mock_bootstrap() -> list[ProviderInfo]:
+    return [
         ProviderInfo(
             name="mock-fast",
             url=f"http://{settings.host}:{settings.mock_fast_port}",
             model="fast-1",
+            provider_type="mock",
             capability={"interactive": 0.85, "reasoning": 0.45, "batch": 0.5, "code": 0.6},
             cost_per_1k_tokens=0.002,
             typical_latency_ms=120,
@@ -100,6 +101,7 @@ def _bootstrap_mock_registry() -> None:
             name="mock-smart",
             url=f"http://{settings.host}:{settings.mock_smart_port}",
             model="smart-1",
+            provider_type="mock",
             capability={"interactive": 0.7, "reasoning": 0.95, "batch": 0.8, "code": 0.9},
             cost_per_1k_tokens=0.02,
             typical_latency_ms=900,
@@ -108,13 +110,54 @@ def _bootstrap_mock_registry() -> None:
             name="mock-cheap",
             url=f"http://{settings.host}:{settings.mock_cheap_port}",
             model="cheap-1",
+            provider_type="mock",
             capability={"interactive": 0.55, "reasoning": 0.4, "batch": 0.75, "code": 0.45},
             cost_per_1k_tokens=0.0003,
             typical_latency_ms=600,
         ),
     ]
-    if os.environ.get("INTELLIROUTE_SKIP_BOOTSTRAP") != "1":
-        registry.bulk_register(bootstrap)
+
+
+def _external_bootstrap() -> list[ProviderInfo]:
+    providers: list[ProviderInfo] = []
+    if settings.groq_api_key:
+        providers.append(
+            ProviderInfo(
+                name="groq",
+                url="https://api.groq.com/openai/v1",
+                model=settings.groq_model,
+                provider_type="groq",
+                capability={"interactive": 0.93, "reasoning": 0.76, "batch": 0.88, "code": 0.74},
+                cost_per_1k_tokens=0.0007,
+                typical_latency_ms=500,
+            )
+        )
+    if settings.gemini_api_key:
+        providers.append(
+            ProviderInfo(
+                name="gemini",
+                url="https://generativelanguage.googleapis.com/v1beta",
+                model=settings.gemini_model,
+                provider_type="gemini",
+                capability={"interactive": 0.72, "reasoning": 0.97, "batch": 0.68, "code": 0.91},
+                cost_per_1k_tokens=0.0035,
+                typical_latency_ms=1200,
+            )
+        )
+    return providers
+
+
+def _bootstrap_registry() -> None:
+    if os.environ.get("INTELLIROUTE_SKIP_BOOTSTRAP") == "1":
+        return
+    external = _external_bootstrap()
+    if external and not settings.use_mock_providers:
+        registry.bulk_register(external)
+        log_event(log, "bootstrap_registry", mode="external", providers=[p.name for p in external])
+        return
+    mocks = _mock_bootstrap()
+    registry.bulk_register(mocks)
+    log_event(log, "bootstrap_registry", mode="mock", providers=[p.name for p in mocks])
 
 
 @app.get("/health")
@@ -201,19 +244,22 @@ async def _queue_worker(worker_id: int) -> None:
             elapsed_ms = (time.monotonic() - queued.enqueued_at) * 1000
             if elapsed_ms > request_queue._config.timeout_ms:
                 request_queue.record_timeout(queued.request_id)
-                queued.future.set_exception(
-                    TimeoutError(
-                        f"Request {queued.request_id} timed out after {elapsed_ms:.0f}ms"
+                if queued.future is not None and not queued.future.done():
+                    queued.future.set_exception(
+                        TimeoutError(
+                            f"Request {queued.request_id} timed out after {elapsed_ms:.0f}ms"
+                        )
                     )
-                )
                 continue
 
             # Execute the request
             try:
                 response = await _execute_completion(queued.request_id, queued.request)
-                queued.future.set_result(response)
+                if queued.future is not None and not queued.future.done():
+                    queued.future.set_result(response)
             except Exception as exc:
-                queued.future.set_exception(exc)
+                if queued.future is not None and not queued.future.done():
+                    queued.future.set_exception(exc)
         except asyncio.CancelledError:
             break
         except Exception as exc:
@@ -321,16 +367,13 @@ async def _call_provider(
     assert _http is not None
     start = time.monotonic()
     try:
-        payload = {
-            "messages": [m.model_dump() for m in req.messages],
-            "max_tokens": req.max_tokens,
-        }
-        r = await _http.post(f"{info.url}/v1/chat", json=payload, timeout=5.0)
-        elapsed_ms = (time.monotonic() - start) * 1000
-        if r.status_code != 200:
-            return False, elapsed_ms, None
-        return True, elapsed_ms, r.json()
-    except Exception:
+        ok, data = await call_provider(_http, info, req)
+        return ok, (time.monotonic() - start) * 1000, data
+    except ProviderCallError as exc:
+        log_event(log, "provider_call_config_error", provider=info.name, error=str(exc))
+        return False, (time.monotonic() - start) * 1000, None
+    except Exception as exc:
+        log_event(log, "provider_call_error", provider=info.name, error=str(exc))
         return False, (time.monotonic() - start) * 1000, None
 
 
@@ -402,6 +445,12 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
     if not enqueued:
         log_event(log, "request_shed", request_id=request_id, reason=error_msg)
         raise HTTPException(status_code=503, detail=f"queue full: {error_msg}")
+
+    if queued_req is None:
+        raise HTTPException(status_code=500, detail="queue enqueue failed")
+
+    if queued_req.future is None:
+        queued_req.future = asyncio.get_running_loop().create_future()
 
     # Wait for the queued request to be processed with timeout
     try:
