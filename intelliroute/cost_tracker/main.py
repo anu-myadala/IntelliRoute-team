@@ -60,6 +60,12 @@ async def set_budget(b: Budget) -> dict:
     return {"tenant": b.tenant_id, "budget_usd": b.budget_usd}
 
 
+@app.get("/budget/{tenant_id}")
+async def get_budget(tenant_id: str) -> dict:
+    budget = accountant.get_budget(tenant_id)
+    return {"tenant_id": tenant_id, "budget_usd": budget}
+
+
 @app.get("/alerts")
 async def alerts() -> dict:
     return {"alerts": accountant.alerts()}

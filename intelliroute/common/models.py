@@ -45,6 +45,18 @@ class CompletionRequest(BaseModel):
     latency_budget_ms: Optional[int] = None
 
 
+class PolicyEvaluationResult(BaseModel):
+    """Control-plane policy output before multi-objective ranking."""
+
+    complexity_score: float = 0.0
+    complexity_signals: list[str] = Field(default_factory=list)
+    allowed_providers: list[str] = Field(default_factory=list)
+    blocked_providers: list[str] = Field(default_factory=list)
+    matched_rules: list[str] = Field(default_factory=list)
+    downgrade_reason: Optional[str] = None
+    fail_open: bool = False
+
+
 class CompletionResponse(BaseModel):
     request_id: str
     provider: str
@@ -58,6 +70,7 @@ class CompletionResponse(BaseModel):
     # Set when the router had to fall back from the preferred provider
     fallback_used: bool = False
     degraded: bool = False
+    policy_evaluation: Optional[PolicyEvaluationResult] = None
 
 
 class ProviderInfo(BaseModel):
