@@ -139,6 +139,29 @@ cd intelliroute
 You should see `README.md`, `pyproject.toml`, and the folders
 `intelliroute/`, `tests/`, and `scripts/`.
 
+### Step 1.5 — Add your API keys (optional, enables real models)
+
+If you want IntelliRoute to call live models instead of the local mock
+providers, create a project-root `.env` file from the included example and
+paste in your keys:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` and set:
+
+```env
+GEMINI_API_KEY=your_key_here
+GROQ_API_KEY=your_key_here
+```
+
+With either key present, the router automatically boots the real provider(s).
+With both keys present, IntelliRoute will prefer **Groq** for fast / cheaper
+interactive and batch-style prompts, and **Gemini** for heavier reasoning and
+code-oriented prompts. Set `INTELLIROUTE_USE_MOCKS=1` if you want to force the
+old local demo providers instead.
+
 ### Step 2 — Install dependencies
 
 We recommend a virtualenv so you don't pollute system Python:
@@ -190,6 +213,10 @@ cd intelliroute
 source .venv/bin/activate
 PYTHONPATH=. python3 scripts/start_stack.py
 ```
+
+If `.env` contains `GEMINI_API_KEY` and/or `GROQ_API_KEY`, the stack will use
+those live providers automatically. Otherwise it will launch the original mock
+providers for the classroom demo.
 
 You should see ten "starting ..." lines (gateway, router, 3 rate
 limiter replicas, health monitor, cost tracker, 3 mock providers) plus

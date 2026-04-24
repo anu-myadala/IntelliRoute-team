@@ -28,9 +28,27 @@ RL_REPLICAS = [
 KEY = os.environ.get("INTELLIROUTE_DEMO_KEY", "demo-key-123")
 
 
+def _wait_ready(base_url: str, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error: str | None = None
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"{base_url}/health", timeout=1.0)
+            if r.status_code == 200:
+                return
+            last_error = f"HTTP {r.status_code}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(0.2)
+    raise RuntimeError(
+        f"gateway at {base_url} did not become ready within {timeout:.1f}s: {last_error}"
+    )
+
+
 def _post(path: str, body: dict, url: str = GATEWAY) -> dict:
     r = httpx.post(
-        f"{url}{path}", json=body,
+        f"{url}{path}",
+        json=body,
         headers={"X-API-Key": KEY, "Content-Type": "application/json"},
         timeout=10.0,
     )
@@ -52,7 +70,6 @@ def demo_feedback() -> None:
     """Demo: Feedback metrics collection."""
     print("\n=== Feedback Metrics Demo ===")
     try:
-        # Send some requests
         for i in range(3):
             body = {
                 "tenant_id": "test-tenant",
@@ -66,7 +83,6 @@ def demo_feedback() -> None:
 
         time.sleep(0.5)
 
-        # Check feedback metrics
         metrics = _get("/feedback", url=ROUTER)
         print("Feedback metrics:")
         print(json.dumps(metrics, indent=2))
@@ -78,7 +94,6 @@ def demo_backpressure() -> None:
     """Demo: Queue and backpressure."""
     print("\n=== Queue & Backpressure Demo ===")
     try:
-        # Check queue stats
         stats = _get("/queue/stats", url=ROUTER)
         print("Queue stats:")
         print(json.dumps(stats, indent=2))
@@ -104,14 +119,18 @@ def demo_election() -> None:
 
 
 def main() -> int:
+    _wait_ready(GATEWAY)
     prompts = [
         ("interactive small-talk", "Hi, what's the capital of France?"),
-        ("reasoning", (
-            "Explain step by step why the CAP theorem implies that a "
-            "distributed system cannot simultaneously offer consistency, "
-            "availability, and partition tolerance, and analyze how real "
-            "systems trade off these properties."
-        )),
+        (
+            "reasoning",
+            (
+                "Explain step by step why the CAP theorem implies that a "
+                "distributed system cannot simultaneously offer consistency, "
+                "availability, and partition tolerance, and analyze how real "
+                "systems trade off these properties."
+            ),
+        ),
         ("batch summarisation", "Summarize the following document into bullet points: ..."),
         ("code", "I got an exception in my Python loop, here is the traceback ..."),
     ]
@@ -126,18 +145,19 @@ def main() -> int:
         except Exception as exc:
             print(f"[{label}] FAILED: {exc}")
             return 1
-        print(f"[{label}] -> {resp['provider']} ({resp['model']}) "
-              f"latency={resp['latency_ms']}ms cost=${resp['estimated_cost_usd']:.6f}"
-              f" fallback={resp['fallback_used']}")
+        print(
+            f"[{label}] -> {resp['provider']} ({resp['model']}) "
+            f"latency={resp['latency_ms']}ms cost=${resp['estimated_cost_usd']:.6f}"
+            f" fallback={resp['fallback_used']}"
+        )
 
-    time.sleep(0.3)  # let async cost events flush
+    time.sleep(0.3)
     summary = httpx.get(
         f"{GATEWAY}/v1/cost/summary", headers={"X-API-Key": KEY}, timeout=5.0
     ).json()
     print("\nCost summary:")
     print(json.dumps(summary, indent=2))
 
-    # Run the new demos
     demo_feedback()
     demo_backpressure()
     demo_election()
