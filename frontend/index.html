@@ -849,6 +849,7 @@
             <div style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
                 <div class="section-title">🏥 Provider Health</div>
                 <div class="provider-health" id="providerHealth"></div>
+                <div id="registryStaleHint" style="font-size:11px;color:var(--text-secondary);padding:4px 8px 8px;min-height:16px;"></div>
             </div>
 
             <div style="flex: 0 0 auto;">
@@ -1208,6 +1209,21 @@
                     });
                 }
             } catch (e) { /* health monitor not yet up */ }
+
+            // 1b. Discovery / heartbeat stale hint
+            try {
+                const rr = await fetch(`${ROUTER_API}/providers/registry`);
+                if (rr.ok) {
+                    const jr = await rr.json();
+                    const hint = document.getElementById('registryStaleHint');
+                    if (hint) {
+                        const stale = jr.stale_names || [];
+                        hint.textContent = stale.length
+                            ? `Discovery: ${jr.providers_active}/${jr.providers_total} routable — stale: ${stale.join(', ')}`
+                            : `Discovery: ${jr.providers_active}/${jr.providers_total} routable`;
+                    }
+                }
+            } catch (e) { /* optional */ }
 
             // 2. Fetch feedback metrics (EMA latency, success, anomaly)
             try {
