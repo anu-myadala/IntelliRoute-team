@@ -33,7 +33,9 @@ from ..common.models import (
     Intent,
     PolicyEvaluationResult,
     ProviderHealth,
+    ProviderHeartbeatRequest,
     ProviderInfo,
+    ProviderRegisterRequest,
     RateLimitCheck,
 )
 from .feedback import CompletionOutcome, FeedbackCollector
@@ -63,6 +65,7 @@ app.add_middleware(
 _http: Optional[httpx.AsyncClient] = None
 _WORKER_COUNT = 4
 _worker_tasks: list[asyncio.Task] = []
+_discovery_task: Optional[asyncio.Task] = None
 
 
 @app.on_event("startup")
@@ -75,11 +78,17 @@ async def _startup() -> None:
     for i in range(_WORKER_COUNT):
         task = asyncio.create_task(_queue_worker(i))
         _worker_tasks.append(task)
+    global _discovery_task
+    _discovery_task = asyncio.create_task(_discovery_sweep_loop())
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    global _worker_tasks
+    global _worker_tasks, _discovery_task
+    if _discovery_task is not None:
+        _discovery_task.cancel()
+        await asyncio.gather(_discovery_task, return_exceptions=True)
+        _discovery_task = None
     if _http is not None:
         await _http.aclose()
     # Cancel worker tasks
@@ -165,24 +174,101 @@ def _bootstrap_registry() -> None:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "healthy", "providers": len(registry.all())}
+    now = time.time()
+    active = len(registry.all_active(now))
+    total = len(registry.all_entries())
+    return {
+        "status": "healthy",
+        "providers": active,
+        "providers_active": active,
+        "providers_total": total,
+    }
 
 
 @app.post("/providers")
 async def register_provider(p: ProviderInfo) -> dict:
-    registry.register(p)
+    registry.register_bootstrap(p)
+    log_event(
+        log,
+        "provider_registered",
+        mode="bootstrap",
+        name=p.name,
+        provider_id=p.name,
+    )
     return {"registered": p.name}
+
+
+@app.post("/providers/register")
+async def register_provider_dynamic(req: ProviderRegisterRequest) -> dict:
+    registry.register_api(req)
+    pid = (req.provider_id or req.provider.name).strip()
+    log_event(
+        log,
+        "provider_registered",
+        mode="api",
+        name=req.provider.name,
+        provider_id=pid,
+        lease_ttl_seconds=req.lease_ttl_seconds,
+        source=req.registration_source,
+    )
+    return {"registered": req.provider.name, "provider_id": pid}
+
+
+@app.post("/providers/heartbeat")
+async def provider_heartbeat(req: ProviderHeartbeatRequest) -> dict:
+    ok = registry.heartbeat(req.provider_id.strip())
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail="unknown provider_id or provider does not use heartbeats",
+        )
+    log_event(log, "provider_heartbeat", provider_id=req.provider_id.strip())
+    return {"ok": True, "provider_id": req.provider_id.strip()}
+
+
+@app.get("/providers/registry")
+async def providers_registry() -> dict:
+    """Debug / observability: all rows including stale (TTL expired) providers.
+
+    Declared before ``/providers/{{name}}`` so ``registry`` is not captured as a name.
+    """
+    now = time.time()
+    stale = registry.stale_names(now)
+    return {
+        "providers": registry.discovery_snapshot(now),
+        "providers_active": len(registry.all_active(now)),
+        "providers_total": len(registry.all_entries()),
+        "stale_names": stale,
+    }
 
 
 @app.delete("/providers/{name}")
 async def deregister_provider(name: str) -> dict:
     registry.deregister(name)
+    log_event(log, "provider_deregistered", name=name)
     return {"deregistered": name}
 
 
 @app.get("/providers")
 async def list_providers() -> list[ProviderInfo]:
-    return registry.all()
+    """Routable providers only (same set used before ranking)."""
+    return registry.all_active(time.time())
+
+
+async def _discovery_sweep_loop() -> None:
+    """Periodic observability for providers whose heartbeat lease has lapsed."""
+    interval = float(os.environ.get("INTELLIROUTE_DISCOVERY_SWEEP_S", "15"))
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            now = time.time()
+            stale = registry.stale_names(now)
+            if stale:
+                log_event(log, "provider_heartbeat_expired", providers=stale)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            log_event(log, "discovery_sweep_error", error=str(exc))
 
 
 async def _fetch_health_snapshot() -> dict[str, ProviderHealth]:
@@ -261,7 +347,8 @@ async def _prepare_routing(
 ) -> tuple[Intent, dict[str, ProviderHealth], list[ProviderInfo], PolicyEvaluationResult | None]:
     intent = classify(req)
     health = await _fetch_health_snapshot()
-    all_providers = registry.all()
+    now = time.time()
+    all_providers = registry.all_active(now)
     tenant_budget, tenant_spent = await _fetch_tenant_budget_context(req.tenant_id)
     candidates, policy_result = policy_evaluator.evaluate(
         all_providers,
