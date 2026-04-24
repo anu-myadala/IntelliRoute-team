@@ -31,6 +31,7 @@ from ..common.models import (
     CompletionResponse,
     CostEvent,
     Intent,
+    PolicyEvaluationResult,
     ProviderHealth,
     ProviderInfo,
     RateLimitCheck,
@@ -38,6 +39,7 @@ from ..common.models import (
 from .feedback import CompletionOutcome, FeedbackCollector
 from .intent import classify
 from .policy import RoutingPolicy
+from .policy_engine import PolicyEvaluator
 from .provider_clients import ProviderCallError, call_provider
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
@@ -47,6 +49,7 @@ log = get_logger("router")
 registry = ProviderRegistry()
 feedback = FeedbackCollector()
 policy = RoutingPolicy(feedback=feedback)
+policy_evaluator = PolicyEvaluator()
 request_queue = RequestQueue()
 
 app = FastAPI(title="IntelliRoute Router")
@@ -231,6 +234,47 @@ async def _publish_cost(event: CostEvent) -> None:
         pass
 
 
+async def _fetch_tenant_budget_context(tenant_id: str) -> tuple[float | None, float]:
+    """Return (budget_usd or None, spent_usd). Fail-open on errors."""
+    assert _http is not None
+    spent = 0.0
+    try:
+        r = await _http.get(f"{settings.cost_tracker_url}/summary/{tenant_id}")
+        if r.status_code == 200:
+            spent = float(r.json().get("total_cost_usd", 0.0))
+    except Exception:
+        pass
+    budget: float | None = None
+    try:
+        r = await _http.get(f"{settings.cost_tracker_url}/budget/{tenant_id}")
+        if r.status_code == 200:
+            raw = r.json().get("budget_usd")
+            if raw is not None:
+                budget = float(raw)
+    except Exception:
+        pass
+    return budget, spent
+
+
+async def _prepare_routing(
+    req: CompletionRequest,
+) -> tuple[Intent, dict[str, ProviderHealth], list[ProviderInfo], PolicyEvaluationResult | None]:
+    intent = classify(req)
+    health = await _fetch_health_snapshot()
+    all_providers = registry.all()
+    tenant_budget, tenant_spent = await _fetch_tenant_budget_context(req.tenant_id)
+    candidates, policy_result = policy_evaluator.evaluate(
+        all_providers,
+        intent,
+        req,
+        tenant_budget_usd=tenant_budget,
+        tenant_spent_usd=tenant_spent,
+    )
+    if not policy_evaluator._config.enabled:
+        return intent, health, list(all_providers), None
+    return intent, health, candidates, policy_result
+
+
 async def _queue_worker(worker_id: int) -> None:
     """Worker coroutine that processes queued requests."""
     while True:
@@ -271,10 +315,9 @@ async def _execute_completion(
     request_id: str, req: CompletionRequest
 ) -> CompletionResponse:
     """Core completion logic: ranking, provider tries, and feedback recording."""
-    intent = classify(req)
-    health = await _fetch_health_snapshot()
+    intent, health, candidates, pe = await _prepare_routing(req)
     ranked = policy.rank(
-        registry.all(), health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
+        candidates, health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
     )
     if not ranked:
         raise HTTPException(status_code=503, detail="no providers registered")
@@ -285,6 +328,9 @@ async def _execute_completion(
         request_id=request_id,
         intent=intent.value,
         primary=ranked[0].provider.name,
+        policy_matched_rules=list(pe.matched_rules) if pe else [],
+        policy_blocked=list(pe.blocked_providers) if pe else [],
+        policy_complexity=pe.complexity_score if pe else None,
     )
 
     fallback_used = False
@@ -356,6 +402,7 @@ async def _execute_completion(
             estimated_cost_usd=round(estimated_cost, 6),
             fallback_used=fallback_used or i > 0,
             degraded=i > 0,
+            policy_evaluation=pe,
         )
 
     raise HTTPException(status_code=503, detail=f"all providers failed: {last_error}")
@@ -381,6 +428,7 @@ class RouteDecision(BaseModel):
     intent: str
     ranked: list[str]
     scores: dict[str, float]
+    policy_evaluation: Optional[PolicyEvaluationResult] = None
 
 
 @app.get("/feedback")
@@ -414,15 +462,15 @@ async def queue_stats() -> dict:
 @app.post("/decide", response_model=RouteDecision)
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
-    intent = classify(req)
-    health = await _fetch_health_snapshot()
+    intent, health, candidates, pe = await _prepare_routing(req)
     ranked = policy.rank(
-        registry.all(), health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
+        candidates, health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
     )
     return RouteDecision(
         intent=intent.value,
         ranked=[s.provider.name for s in ranked],
         scores={s.provider.name: round(s.score, 4) for s in ranked},
+        policy_evaluation=pe,
     )
 
 
