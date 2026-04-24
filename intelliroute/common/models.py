@@ -90,6 +90,33 @@ class ProviderInfo(BaseModel):
     max_concurrency: int = 32
 
 
+class ProviderRegisterRequest(BaseModel):
+    """Dynamic provider registration (requires heartbeats within ``lease_ttl_seconds``)."""
+
+    provider_id: str = Field(
+        default="",
+        description="Stable id for heartbeats; defaults to provider.name when empty.",
+    )
+    provider: ProviderInfo
+    lease_ttl_seconds: float = Field(
+        ...,
+        gt=0,
+        description="Seconds allowed since last heartbeat before exclusion from routing.",
+    )
+    registration_source: str = Field(default="api", max_length=64)
+    model_tier: str = Field(
+        default="",
+        description="Optional tier label (e.g. standard, premium); defaults to provider_type.",
+        max_length=64,
+    )
+
+
+class ProviderHeartbeatRequest(BaseModel):
+    """Refresh liveness lease for a dynamically registered provider."""
+
+    provider_id: str = Field(..., min_length=1, max_length=256)
+
+
 class ProviderHealth(BaseModel):
     name: str
     healthy: bool
