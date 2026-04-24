@@ -41,6 +41,11 @@ class CostAccountant:
         with self._lock:
             self._budgets[tenant_id] = budget_usd
 
+    def get_budget(self, tenant_id: str) -> float | None:
+        with self._lock:
+            b = self._budgets.get(tenant_id)
+            return b if b is not None else None
+
     def record(self, event: CostEvent) -> None:
         with self._lock:
             r = self._rollups[event.tenant_id]
