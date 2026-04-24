@@ -986,10 +986,15 @@
                 addMessage('assistant', data.content, {
                     provider: data.provider,
                     latency: data.latency_ms,
-                    attempts: data.fallback_used ? '2+' : '1'
+                    attempts: data.fallback_used ? '2+' : '1',
+                    policyEvaluation: data.policy_evaluation || null
                 });
 
-                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})`);
+                const pe = data.policy_evaluation;
+                const policyLine = pe && (pe.matched_rules || []).length
+                    ? `Policy: ${(pe.matched_rules || []).join(', ')}${pe.downgrade_reason ? ' — ' + pe.downgrade_reason : ''}`
+                    : '';
+                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${policyLine ? ' | ' + policyLine : ''}`);
                 highlightProvider(data.provider);
 
             } catch (error) {
@@ -1045,6 +1050,11 @@
             }
             if (meta.attempts) {
                 metaHtml += `<span class="meta-badge">🔄 ${escapeHtml(String(meta.attempts))} attempt(s)</span>`;
+            }
+            if (meta.policyEvaluation && (meta.policyEvaluation.matched_rules || []).length) {
+                const pr = meta.policyEvaluation.matched_rules.join(', ');
+                const cx = typeof meta.policyEvaluation.complexity_score === 'number' ? meta.policyEvaluation.complexity_score : '';
+                metaHtml += `<span class="meta-badge" title="${escapeHtml(JSON.stringify(meta.policyEvaluation))}">📜 ${escapeHtml(pr)}${cx !== '' ? ' · cx=' + escapeHtml(String(cx)) : ''}</span>`;
             }
 
             div.innerHTML = `

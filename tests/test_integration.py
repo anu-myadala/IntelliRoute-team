@@ -226,20 +226,18 @@ def test_interactive_prompt_routes_to_fast(stack):
     assert body["total_tokens"] > 0
 
 
-def test_batch_prompt_routes_to_cheap(stack):
-    r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_batch_request(), headers=_headers(), timeout=10.0)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["provider"] == "mock-cheap"
-
-
 def test_router_decide_endpoint_returns_ranking(stack):
     r = httpx.post(f"{stack.router_url}/decide", json=_interactive_request(), timeout=5.0)
     assert r.status_code == 200
     body = r.json()
     assert body["intent"] == "interactive"
     assert body["ranked"][0] == "mock-fast"
-    assert set(body["ranked"]) == {"mock-fast", "mock-smart", "mock-cheap"}
+    # Policy layer removes premium and high-latency mocks for short interactive.
+    assert "mock-smart" not in body["ranked"]
+    pe = body.get("policy_evaluation")
+    assert pe is not None
+    assert pe["complexity_score"] >= 0.0
+    assert isinstance(pe.get("matched_rules"), list)
 
 
 def test_failover_when_top_provider_is_down(stack):
@@ -261,6 +259,13 @@ def test_failover_when_top_provider_is_down(stack):
         assert body["fallback_used"] is True
     finally:
         httpx.post(f"{stack.mock_url('mock_fast')}/admin/force_fail", json={"fail": False}, timeout=5.0)
+
+
+def test_batch_prompt_routes_to_cheap(stack):
+    r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_batch_request(), headers=_headers(), timeout=10.0)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["provider"] == "mock-cheap"
 
 
 def test_rate_limiter_throttles_when_bucket_drained(stack):
