@@ -842,6 +842,9 @@
                     </div>
                     <div class="flow-arrow"></div>
                 </div>
+                <div id="brownoutBanner" style="margin-top:6px;padding:4px 8px;border-radius:6px;font-size:11px;color:var(--text-secondary);background:rgba(210,153,34,0.08);border:1px solid rgba(210,153,34,0.25);display:none;">
+                    Brownout mode active
+                </div>
 
                 <div class="provider-ranking" id="providerRanking"></div>
             </div>
@@ -992,10 +995,14 @@
                 });
 
                 const pe = data.policy_evaluation;
+                const bo = data.brownout_status;
                 const policyLine = pe && (pe.matched_rules || []).length
                     ? `Policy: ${(pe.matched_rules || []).join(', ')}${pe.downgrade_reason ? ' — ' + pe.downgrade_reason : ''}`
                     : '';
-                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${policyLine ? ' | ' + policyLine : ''}`);
+                const brownoutLine = bo && bo.is_degraded
+                    ? `Brownout: ${bo.reason} (q=${bo.queue_depth}, p95=${Math.round(bo.p95_latency_ms || 0)}ms)`
+                    : '';
+                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${policyLine ? ' | ' + policyLine : ''}${brownoutLine ? ' | ' + brownoutLine : ''}`);
                 highlightProvider(data.provider);
 
             } catch (error) {
@@ -1221,6 +1228,23 @@
                         hint.textContent = stale.length
                             ? `Discovery: ${jr.providers_active}/${jr.providers_total} routable — stale: ${stale.join(', ')}`
                             : `Discovery: ${jr.providers_active}/${jr.providers_total} routable`;
+                    }
+                }
+            } catch (e) { /* optional */ }
+
+            // 1c. Brownout status
+            try {
+                const br = await fetch(`${ROUTER_API}/brownout`);
+                if (br.ok) {
+                    const b = await br.json();
+                    const banner = document.getElementById('brownoutBanner');
+                    if (banner) {
+                        if (b.is_degraded) {
+                            banner.style.display = 'block';
+                            banner.textContent = `Brownout active · reason=${b.reason} · queue=${b.queue_depth} · p95=${Math.round(b.p95_latency_ms)}ms`;
+                        } else {
+                            banner.style.display = 'none';
+                        }
                     }
                 }
             } catch (e) { /* optional */ }
