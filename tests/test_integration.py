@@ -53,7 +53,7 @@ def _wait_ready(url: str, timeout: float = 10.0) -> None:
 
 
 class _Stack:
-    def __init__(self) -> None:
+    def __init__(self, env_overrides: dict[str, str] | None = None) -> None:
         self.ports = {
             "gateway": _free_port(),
             "router": _free_port(),
@@ -65,6 +65,7 @@ class _Stack:
             "mock_cheap": _free_port(),
         }
         self.procs: list[subprocess.Popen] = []
+        self.env_overrides = dict(env_overrides or {})
 
     def _base_env(self) -> dict:
         env = os.environ.copy()
@@ -78,6 +79,7 @@ class _Stack:
         env["INTELLIROUTE_MOCK_FAST_PORT"] = str(self.ports["mock_fast"])
         env["INTELLIROUTE_MOCK_SMART_PORT"] = str(self.ports["mock_smart"])
         env["INTELLIROUTE_MOCK_CHEAP_PORT"] = str(self.ports["mock_cheap"])
+        env.update(self.env_overrides)
         return env
 
     def _spawn_uvicorn(self, module: str, port: int, extra_env: dict | None = None) -> None:
@@ -373,3 +375,38 @@ def test_election_status_shows_leader(stack):
     if "replica_id" in status:
         assert "state" in status
         assert "is_leader" in status
+
+
+def test_brownout_mode_reflected_in_decide_and_complete():
+    """Run a stack with aggressive brownout thresholds and verify metadata."""
+    s = _Stack(
+        env_overrides={
+            "INTELLIROUTE_BROWNOUT_ENABLED": "1",
+            "INTELLIROUTE_BROWNOUT_ENTER_CONSEC": "1",
+            "INTELLIROUTE_BROWNOUT_EXIT_CONSEC": "1",
+            "INTELLIROUTE_BROWNOUT_QUEUE_ENTER": "0",
+            "INTELLIROUTE_BROWNOUT_QUEUE_EXIT": "0",
+        }
+    )
+    s.start()
+    try:
+        r = httpx.post(f"{s.router_url}/decide", json=_batch_request(), timeout=5.0)
+        assert r.status_code == 200
+        body = r.json()
+        bs = body.get("brownout_status")
+        assert bs is not None and bs["is_degraded"] is True
+        pe = body.get("policy_evaluation")
+        assert pe is not None
+        assert "brownout_degrade_low_priority_routing" in pe.get("matched_rules", [])
+
+        r2 = httpx.post(
+            f"{s.gateway_url}/v1/complete",
+            json={**_batch_request(), "max_tokens": 512},
+            headers=_headers(),
+            timeout=10.0,
+        )
+        assert r2.status_code == 200, r2.text
+        resp = r2.json()
+        assert resp.get("brownout_status", {}).get("is_degraded") is True
+    finally:
+        s.stop()

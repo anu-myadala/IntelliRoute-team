@@ -1,7 +1,7 @@
 """Unit tests for control-plane policy evaluation."""
 from __future__ import annotations
 
-from intelliroute.common.models import CompletionRequest, Intent, ProviderInfo
+from intelliroute.common.models import BrownoutStatus, CompletionRequest, Intent, ProviderInfo
 from intelliroute.router.policy_engine import PolicyEngineConfig, PolicyEvaluator
 
 
@@ -132,3 +132,30 @@ def test_fail_open_when_all_blocked(monkeypatch):
     assert len(out) == 3
     assert pe.fail_open is True
     assert "fail_open_restore_full_provider_set" in pe.matched_rules
+
+
+def test_brownout_blocks_premium_for_reasoning() -> None:
+    cfg = PolicyEngineConfig(
+        enabled=True,
+        premium_provider_names=frozenset({"mock-smart"}),
+        complexity_threshold_premium=0.1,
+        budget_utilization_downgrade=0.95,
+        interactive_max_latency_ms=650,
+        apply_interactive_latency_gate=True,
+    )
+    ev = PolicyEvaluator(cfg)
+    req = _req("Explain distributed transactions in detail", intent_hint=Intent.REASONING)
+    out, pe = ev.evaluate(
+        _providers(),
+        Intent.REASONING,
+        req,
+        tenant_budget_usd=None,
+        tenant_spent_usd=0.0,
+        brownout_status=BrownoutStatus(is_degraded=True, reason="queue_depth"),
+        brownout_max_latency_ms=700,
+        brownout_block_premium=True,
+        brownout_prefer_low_latency=True,
+    )
+    names = {p.name for p in out}
+    assert "mock-smart" not in names
+    assert "brownout_degrade_low_priority_routing" in pe.matched_rules
