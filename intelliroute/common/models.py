@@ -57,6 +57,18 @@ class PolicyEvaluationResult(BaseModel):
     fail_open: bool = False
 
 
+class BrownoutStatus(BaseModel):
+    """System-wide overload/brownout state snapshot."""
+
+    is_degraded: bool = False
+    reason: str = "healthy"
+    entered_at_unix: Optional[float] = None
+    queue_depth: int = 0
+    p95_latency_ms: float = 0.0
+    error_rate: float = 0.0
+    timeout_rate: float = 0.0
+
+
 class CompletionResponse(BaseModel):
     request_id: str
     provider: str
@@ -71,6 +83,7 @@ class CompletionResponse(BaseModel):
     fallback_used: bool = False
     degraded: bool = False
     policy_evaluation: Optional[PolicyEvaluationResult] = None
+    brownout_status: Optional[BrownoutStatus] = None
 
 
 class ProviderInfo(BaseModel):

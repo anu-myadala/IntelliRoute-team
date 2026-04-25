@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ...common.models import (
+    BrownoutStatus,
     CompletionRequest,
     Intent,
     PolicyEvaluationResult,
@@ -23,6 +24,7 @@ class PolicyEvaluator:
             self._rule_batch_avoids_premium,
             self._rule_premium_requires_reasoning_or_complexity,
             self._rule_budget_downgrades_premium,
+            self._rule_brownout_degradation,
             self._rule_interactive_latency_gate,
         )
 
@@ -34,6 +36,10 @@ class PolicyEvaluator:
         *,
         tenant_budget_usd: float | None,
         tenant_spent_usd: float,
+        brownout_status: BrownoutStatus | None = None,
+        brownout_max_latency_ms: int | None = None,
+        brownout_block_premium: bool = True,
+        brownout_prefer_low_latency: bool = True,
     ) -> tuple[list[ProviderInfo], PolicyEvaluationResult]:
         if not self._config.enabled or not providers:
             names = [p.name for p in providers]
@@ -59,6 +65,10 @@ class PolicyEvaluator:
             complexity=complexity,
             tenant_budget_usd=tenant_budget_usd,
             tenant_spent_usd=tenant_spent_usd,
+            brownout_status=brownout_status,
+            brownout_max_latency_ms=brownout_max_latency_ms,
+            brownout_block_premium=brownout_block_premium,
+            brownout_prefer_low_latency=brownout_prefer_low_latency,
             blocked=blocked,
             matched=matched,
             downgrade_reason_holder=[downgrade_reason],
@@ -152,6 +162,31 @@ class PolicyEvaluator:
         if gated:
             ctx.matched.append(f"interactive_latency_gate_max_ms={max_ms}")
 
+    def _rule_brownout_degradation(self, ctx: "_RuleContext") -> None:
+        bs = ctx.brownout_status
+        if bs is None or not bs.is_degraded:
+            return
+        if ctx.intent in {Intent.INTERACTIVE, Intent.CODE}:
+            return
+
+        touched = False
+        if ctx.brownout_block_premium:
+            for p in ctx.providers:
+                if self._is_premium(p):
+                    ctx.blocked.add(p.name)
+                    touched = True
+        if ctx.brownout_prefer_low_latency and ctx.brownout_max_latency_ms is not None:
+            for p in ctx.providers:
+                if p.typical_latency_ms > ctx.brownout_max_latency_ms:
+                    ctx.blocked.add(p.name)
+                    touched = True
+        if touched:
+            ctx.matched.append("brownout_degrade_low_priority_routing")
+            if ctx.downgrade_reason_holder[0] is None:
+                ctx.downgrade_reason_holder[0] = (
+                    f"brownout_active reason={bs.reason}"
+                )
+
 
 @dataclass
 class _RuleContext:
@@ -161,6 +196,10 @@ class _RuleContext:
     complexity: ComplexityResult
     tenant_budget_usd: float | None
     tenant_spent_usd: float
+    brownout_status: BrownoutStatus | None
+    brownout_max_latency_ms: int | None
+    brownout_block_premium: bool
+    brownout_prefer_low_latency: bool
     blocked: set[str]
     matched: list[str]
     downgrade_reason_holder: list[str | None]

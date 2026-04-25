@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from ..common.config import settings
 from ..common.logging import get_logger, log_event
 from ..common.models import (
+    BrownoutStatus,
     CompletionRequest,
     CompletionResponse,
     CostEvent,
@@ -39,6 +40,7 @@ from ..common.models import (
     RateLimitCheck,
 )
 from .feedback import CompletionOutcome, FeedbackCollector
+from .brownout import BrownoutManager
 from .intent import classify
 from .policy import RoutingPolicy
 from .policy_engine import PolicyEvaluator
@@ -53,6 +55,8 @@ feedback = FeedbackCollector()
 policy = RoutingPolicy(feedback=feedback)
 policy_evaluator = PolicyEvaluator()
 request_queue = RequestQueue()
+brownout_manager = BrownoutManager()
+_tenant_brownout: dict[str, BrownoutManager] = {}
 
 app = FastAPI(title="IntelliRoute Router")
 app.add_middleware(
@@ -342,13 +346,81 @@ async def _fetch_tenant_budget_context(tenant_id: str) -> tuple[float | None, fl
     return budget, spent
 
 
+def _tenant_key(tenant_id: str) -> str:
+    return tenant_id.strip() or "__anonymous__"
+
+
+def _tenant_brownout_manager(tenant_id: str) -> BrownoutManager:
+    key = _tenant_key(tenant_id)
+    mgr = _tenant_brownout.get(key)
+    if mgr is None:
+        mgr = BrownoutManager(config=brownout_manager.config)
+        _tenant_brownout[key] = mgr
+    return mgr
+
+
+def _record_brownout_result(
+    tenant_id: str, *, latency_ms: float, success: bool, timed_out: bool = False
+) -> None:
+    brownout_manager.record_request_result(
+        latency_ms=latency_ms, success=success, timed_out=timed_out
+    )
+    _tenant_brownout_manager(tenant_id).record_request_result(
+        latency_ms=latency_ms, success=success, timed_out=timed_out
+    )
+
+
 async def _prepare_routing(
     req: CompletionRequest,
-) -> tuple[Intent, dict[str, ProviderHealth], list[ProviderInfo], PolicyEvaluationResult | None]:
+) -> tuple[
+    Intent,
+    dict[str, ProviderHealth],
+    list[ProviderInfo],
+    PolicyEvaluationResult | None,
+    BrownoutStatus,
+]:
     intent = classify(req)
     health = await _fetch_health_snapshot()
     now = time.time()
     all_providers = registry.all_active(now)
+    queue_stats = request_queue.stats()
+    global_bs, transitioned = brownout_manager.evaluate(queue_stats.total_depth)
+    tenant_mgr = _tenant_brownout_manager(req.tenant_id)
+    tenant_bs, tenant_transitioned = tenant_mgr.evaluate(queue_stats.total_depth)
+    if transitioned:
+        log_event(
+            log,
+            "brownout_transition",
+            scope="global",
+            is_degraded=global_bs.is_degraded,
+            reason=global_bs.reason,
+            queue_depth=global_bs.queue_depth,
+            p95_latency_ms=global_bs.p95_latency_ms,
+            error_rate=global_bs.error_rate,
+            timeout_rate=global_bs.timeout_rate,
+        )
+    if tenant_transitioned:
+        log_event(
+            log,
+            "brownout_transition",
+            scope=f"tenant:{_tenant_key(req.tenant_id)}",
+            is_degraded=tenant_bs.is_degraded,
+            reason=tenant_bs.reason,
+            queue_depth=tenant_bs.queue_depth,
+            p95_latency_ms=tenant_bs.p95_latency_ms,
+            error_rate=tenant_bs.error_rate,
+            timeout_rate=tenant_bs.timeout_rate,
+        )
+    effective_bs = tenant_bs if tenant_bs.is_degraded else global_bs
+    bs_model = BrownoutStatus(
+        is_degraded=effective_bs.is_degraded,
+        reason=effective_bs.reason,
+        entered_at_unix=effective_bs.entered_at_unix,
+        queue_depth=effective_bs.queue_depth,
+        p95_latency_ms=effective_bs.p95_latency_ms,
+        error_rate=effective_bs.error_rate,
+        timeout_rate=effective_bs.timeout_rate,
+    )
     tenant_budget, tenant_spent = await _fetch_tenant_budget_context(req.tenant_id)
     candidates, policy_result = policy_evaluator.evaluate(
         all_providers,
@@ -356,10 +428,14 @@ async def _prepare_routing(
         req,
         tenant_budget_usd=tenant_budget,
         tenant_spent_usd=tenant_spent,
+        brownout_status=bs_model,
+        brownout_max_latency_ms=brownout_manager.config.low_latency_max_ms,
+        brownout_block_premium=brownout_manager.config.block_premium_for_medium_and_low,
+        brownout_prefer_low_latency=brownout_manager.config.prefer_low_latency_for_medium_and_low,
     )
     if not policy_evaluator._config.enabled:
-        return intent, health, list(all_providers), None
-    return intent, health, candidates, policy_result
+        return intent, health, list(all_providers), None, bs_model
+    return intent, health, candidates, policy_result, bs_model
 
 
 async def _queue_worker(worker_id: int) -> None:
@@ -402,11 +478,36 @@ async def _execute_completion(
     request_id: str, req: CompletionRequest
 ) -> CompletionResponse:
     """Core completion logic: ranking, provider tries, and feedback recording."""
-    intent, health, candidates, pe = await _prepare_routing(req)
+    started = time.monotonic()
+    intent, health, candidates, pe, bs = await _prepare_routing(req)
+    effective_req = req
+    if (
+        bs.is_degraded
+        and brownout_manager.config.reduce_max_tokens_for_medium_and_low
+        and intent in {Intent.REASONING, Intent.BATCH}
+        and req.max_tokens > brownout_manager.config.degraded_max_tokens
+    ):
+        effective_req = req.model_copy(
+            update={"max_tokens": brownout_manager.config.degraded_max_tokens}
+        )
+        log_event(
+            log,
+            "brownout_max_tokens_clamped",
+            request_id=request_id,
+            old_max_tokens=req.max_tokens,
+            new_max_tokens=effective_req.max_tokens,
+            intent=intent.value,
+        )
+
     ranked = policy.rank(
-        candidates, health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
+        candidates, health=health, intent=intent, latency_budget_ms=effective_req.latency_budget_ms
     )
     if not ranked:
+        _record_brownout_result(
+            effective_req.tenant_id,
+            latency_ms=(time.monotonic() - started) * 1000,
+            success=False,
+        )
         raise HTTPException(status_code=503, detail="no providers registered")
 
     log_event(
@@ -418,6 +519,8 @@ async def _execute_completion(
         policy_matched_rules=list(pe.matched_rules) if pe else [],
         policy_blocked=list(pe.blocked_providers) if pe else [],
         policy_complexity=pe.complexity_score if pe else None,
+        brownout_active=bs.is_degraded,
+        brownout_reason=bs.reason,
     )
 
     fallback_used = False
@@ -425,7 +528,7 @@ async def _execute_completion(
 
     for i, scored in enumerate(ranked):
         info = scored.provider
-        allowed, retry_ms = await _check_rate_limit(req.tenant_id, info.name)
+        allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
         if not allowed:
             log_event(
                 log, "rate_limited", provider=info.name, retry_after_ms=retry_ms
@@ -434,7 +537,7 @@ async def _execute_completion(
             fallback_used = True
             continue
 
-        ok, latency_ms, data = await _call_provider(info, req)
+        ok, latency_ms, data = await _call_provider(info, effective_req)
         asyncio.create_task(_report_health(info.name, ok, latency_ms))
 
         # Record feedback outcome
@@ -444,7 +547,7 @@ async def _execute_completion(
             success=ok,
             prompt_tokens=int(data.get("prompt_tokens", 0)) if data else 0,
             completion_tokens=int(data.get("completion_tokens", 0)) if data else 0,
-            prompt_char_count=len(req.messages[0].content) if req.messages else 1,
+            prompt_char_count=len(effective_req.messages[0].content) if effective_req.messages else 1,
             response_char_count=len(data.get("content", "")) if data else 0,
         )
         feedback.record(outcome)
@@ -466,7 +569,7 @@ async def _execute_completion(
             _publish_cost(
                 CostEvent(
                     request_id=request_id,
-                    tenant_id=req.tenant_id,
+                    tenant_id=effective_req.tenant_id,
                     provider=info.name,
                     model=info.model,
                     prompt_tokens=prompt_tokens,
@@ -477,6 +580,11 @@ async def _execute_completion(
             )
         )
 
+        _record_brownout_result(
+            effective_req.tenant_id,
+            latency_ms=(time.monotonic() - started) * 1000,
+            success=True,
+        )
         return CompletionResponse(
             request_id=request_id,
             provider=info.name,
@@ -490,8 +598,14 @@ async def _execute_completion(
             fallback_used=fallback_used or i > 0,
             degraded=i > 0,
             policy_evaluation=pe,
+            brownout_status=bs,
         )
 
+    _record_brownout_result(
+        effective_req.tenant_id,
+        latency_ms=(time.monotonic() - started) * 1000,
+        success=False,
+    )
     raise HTTPException(status_code=503, detail=f"all providers failed: {last_error}")
 
 
@@ -516,6 +630,7 @@ class RouteDecision(BaseModel):
     ranked: list[str]
     scores: dict[str, float]
     policy_evaluation: Optional[PolicyEvaluationResult] = None
+    brownout_status: Optional[BrownoutStatus] = None
 
 
 @app.get("/feedback")
@@ -546,10 +661,49 @@ async def queue_stats() -> dict:
     }
 
 
+@app.get("/brownout", response_model=BrownoutStatus)
+async def brownout_status() -> BrownoutStatus:
+    bs = brownout_manager.snapshot()
+    return BrownoutStatus(
+        is_degraded=bs.is_degraded,
+        reason=bs.reason,
+        entered_at_unix=bs.entered_at_unix,
+        queue_depth=bs.queue_depth,
+        p95_latency_ms=bs.p95_latency_ms,
+        error_rate=bs.error_rate,
+        timeout_rate=bs.timeout_rate,
+    )
+
+
+@app.get("/brownout/metrics")
+async def brownout_metrics() -> dict:
+    return {
+        "global": brownout_manager.metrics(),
+        "tenants": {
+            key: mgr.metrics()
+            for key, mgr in _tenant_brownout.items()
+        },
+    }
+
+
+@app.get("/brownout/{tenant_id}", response_model=BrownoutStatus)
+async def brownout_status_for_tenant(tenant_id: str) -> BrownoutStatus:
+    bs = _tenant_brownout_manager(tenant_id).snapshot()
+    return BrownoutStatus(
+        is_degraded=bs.is_degraded,
+        reason=bs.reason,
+        entered_at_unix=bs.entered_at_unix,
+        queue_depth=bs.queue_depth,
+        p95_latency_ms=bs.p95_latency_ms,
+        error_rate=bs.error_rate,
+        timeout_rate=bs.timeout_rate,
+    )
+
+
 @app.post("/decide", response_model=RouteDecision)
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
-    intent, health, candidates, pe = await _prepare_routing(req)
+    intent, health, candidates, pe, bs = await _prepare_routing(req)
     ranked = policy.rank(
         candidates, health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
     )
@@ -558,6 +712,15 @@ async def decide(req: CompletionRequest) -> RouteDecision:
         ranked=[s.provider.name for s in ranked],
         scores={s.provider.name: round(s.score, 4) for s in ranked},
         policy_evaluation=pe,
+        brownout_status=BrownoutStatus(
+            is_degraded=bs.is_degraded,
+            reason=bs.reason,
+            entered_at_unix=bs.entered_at_unix,
+            queue_depth=bs.queue_depth,
+            p95_latency_ms=bs.p95_latency_ms,
+            error_rate=bs.error_rate,
+            timeout_rate=bs.timeout_rate,
+        ),
     )
 
 
@@ -568,6 +731,29 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
 
     # Determine priority
     priority = INTENT_PRIORITY.get(intent, Priority.MEDIUM)
+    bs = brownout_manager.snapshot()
+
+    # Brownout override for lowest-priority traffic.
+    if (
+        bs.is_degraded
+        and priority == Priority.LOW
+        and brownout_manager.config.drop_low_priority_when_degraded
+    ):
+        log_event(
+            log,
+            "brownout_low_priority_drop",
+            request_id=request_id,
+            reason=bs.reason,
+            intent=intent.value,
+        )
+        raise HTTPException(status_code=503, detail="brownout active: low-priority traffic deferred")
+
+    if (
+        bs.is_degraded
+        and priority == Priority.LOW
+        and brownout_manager.config.delay_low_priority_ms > 0
+    ):
+        await asyncio.sleep(brownout_manager.config.delay_low_priority_ms / 1000.0)
 
     # HIGH priority requests bypass the queue
     if priority == Priority.HIGH:
@@ -594,6 +780,9 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
         return response
     except asyncio.TimeoutError:
         request_queue.record_timeout(request_id)
+        _record_brownout_result(
+            req.tenant_id, latency_ms=timeout_s * 1000.0, success=False, timed_out=True
+        )
         raise HTTPException(
             status_code=504, detail=f"request processing timed out after {timeout_s}s"
         )
