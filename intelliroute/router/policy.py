@@ -155,6 +155,14 @@ class RoutingPolicy:
             if latency_budget_ms is not None and latency_est > latency_budget_ms:
                 latency_score = 0.0
 
+            # SLA breach demotion: if the provider declares an SLA for this
+            # intent and the observed EMA latency already exceeds it, treat
+            # the provider as out-of-spec and zero its latency sub-score so
+            # it is deprioritised behind any in-spec sibling.
+            sla_ms = p.sla_p95_latency_ms.get(intent.value)
+            if sla_ms is not None and sla_ms > 0 and latency_est > sla_ms:
+                latency_score = 0.0
+
             score = (
                 weights.latency * latency_score
                 + weights.cost * cost_score

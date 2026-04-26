@@ -106,6 +106,12 @@ class ProviderInfo(BaseModel):
     # overload/timeout, the router prefers a same-or-lower-tier sibling
     # rather than retrying another premium model.
     capability_tier: int = Field(default=2, ge=1, le=3)
+    # Per-intent SLA: declared p95 latency the operator considers acceptable
+    # for this provider on a given intent class (ms). Keys match Intent.value.
+    # Empty dict means "no SLA declared" — the ranker treats it as no constraint.
+    sla_p95_latency_ms: dict[str, float] = Field(default_factory=dict)
+    # Per-provider retry budget used by the fallback loop's backoff calculation.
+    max_retries: int = 3
 
 
 class ProviderRegisterRequest(BaseModel):
