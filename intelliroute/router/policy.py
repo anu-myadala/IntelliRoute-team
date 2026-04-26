@@ -177,3 +177,20 @@ class RoutingPolicy:
 
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored
+
+    @staticmethod
+    def reorder_after_failure(
+        remaining: list[ScoredProvider], failed_tier: int
+    ) -> list[ScoredProvider]:
+        """Bias the next-attempt order toward graceful capability degradation.
+
+        After a primary fails for a non-capability reason (overload, timeout,
+        rate limit), prefer same-or-lower-tier siblings before reaching for
+        another premium model. Stable within each band so the underlying
+        multi-objective ranking is preserved as the tiebreaker.
+        """
+        if not remaining:
+            return remaining
+        same_or_lower = [s for s in remaining if s.provider.capability_tier <= failed_tier]
+        higher = [s for s in remaining if s.provider.capability_tier > failed_tier]
+        return same_or_lower + higher

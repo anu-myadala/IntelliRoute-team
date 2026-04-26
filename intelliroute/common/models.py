@@ -101,6 +101,11 @@ class ProviderInfo(BaseModel):
     typical_latency_ms: float = 500.0
     # Max concurrent in-flight requests recommended
     max_concurrency: int = 32
+    # Capability tier: 1 = small/cheap, 2 = standard, 3 = premium. Used by the
+    # graceful-degradation failover ladder: when a primary fails due to
+    # overload/timeout, the router prefers a same-or-lower-tier sibling
+    # rather than retrying another premium model.
+    capability_tier: int = Field(default=2, ge=1, le=3)
 
 
 class ProviderRegisterRequest(BaseModel):

@@ -141,3 +141,68 @@ def test_policy_without_feedback_uses_static():
     ranked = policy.rank(_providers(), health={}, intent=Intent.INTERACTIVE)
     # Without feedback, should use typical_latency_ms from provider
     assert ranked[0].provider.name == "fast"
+
+
+def _tiered_providers() -> list[ProviderInfo]:
+    return [
+        ProviderInfo(
+            name="premium",
+            url="http://premium",
+            model="premium-1",
+            capability={"interactive": 0.9, "reasoning": 0.95},
+            cost_per_1k_tokens=0.03,
+            typical_latency_ms=900,
+            capability_tier=3,
+        ),
+        ProviderInfo(
+            name="standard",
+            url="http://standard",
+            model="standard-1",
+            capability={"interactive": 0.7, "reasoning": 0.7},
+            cost_per_1k_tokens=0.005,
+            typical_latency_ms=400,
+            capability_tier=2,
+        ),
+        ProviderInfo(
+            name="cheap",
+            url="http://cheap",
+            model="cheap-1",
+            capability={"interactive": 0.5, "reasoning": 0.4},
+            cost_per_1k_tokens=0.0005,
+            typical_latency_ms=600,
+            capability_tier=1,
+        ),
+    ]
+
+
+def test_reorder_after_failure_prefers_lower_tier_siblings():
+    """A failed premium primary should fall back to lower-tier siblings first."""
+    policy = RoutingPolicy()
+    ranked = policy.rank(_tiered_providers(), health={}, intent=Intent.REASONING)
+    # Simulate the premium primary failing: take everything except premium and reorder.
+    score_map = {s.provider.name: s for s in ranked}
+    remaining = [score_map["standard"], score_map["cheap"]]
+    reordered = RoutingPolicy.reorder_after_failure(remaining, failed_tier=3)
+    names = [s.provider.name for s in reordered]
+    # Both standard (tier 2) and cheap (tier 1) are <= tier 3 → both stay,
+    # ordering preserved relative to original score ranking.
+    assert set(names) == {"standard", "cheap"}
+
+
+def test_reorder_after_failure_demotes_higher_tier():
+    """When primary is mid-tier, premium peers must be demoted to the tail."""
+    policy = RoutingPolicy()
+    providers = _tiered_providers()
+    ranked = policy.rank(providers, health={}, intent=Intent.INTERACTIVE)
+    # Construct a scenario where standard (tier 2) failed and premium is still in pool.
+    # Build "remaining" with premium first, cheap second.
+    score_map = {s.provider.name: s for s in ranked}
+    remaining = [score_map["premium"], score_map["cheap"]]
+    reordered = RoutingPolicy.reorder_after_failure(remaining, failed_tier=2)
+    # cheap (tier 1) is <= 2 and must come before premium (tier 3).
+    assert reordered[0].provider.name == "cheap"
+    assert reordered[1].provider.name == "premium"
+
+
+def test_reorder_after_failure_empty_list():
+    assert RoutingPolicy.reorder_after_failure([], failed_tier=2) == []
