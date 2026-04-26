@@ -112,6 +112,7 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.85, "reasoning": 0.45, "batch": 0.5, "code": 0.6},
             cost_per_1k_tokens=0.002,
             typical_latency_ms=120,
+            capability_tier=2,
         ),
         ProviderInfo(
             name="mock-smart",
@@ -121,6 +122,7 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.7, "reasoning": 0.95, "batch": 0.8, "code": 0.9},
             cost_per_1k_tokens=0.02,
             typical_latency_ms=900,
+            capability_tier=3,
         ),
         ProviderInfo(
             name="mock-cheap",
@@ -130,6 +132,7 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.55, "reasoning": 0.4, "batch": 0.75, "code": 0.45},
             cost_per_1k_tokens=0.0003,
             typical_latency_ms=600,
+            capability_tier=1,
         ),
     ]
 
@@ -146,6 +149,7 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.93, "reasoning": 0.76, "batch": 0.88, "code": 0.74},
                 cost_per_1k_tokens=0.0007,
                 typical_latency_ms=500,
+                capability_tier=2,
             )
         )
     if settings.gemini_api_key:
@@ -158,6 +162,7 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.72, "reasoning": 0.97, "batch": 0.68, "code": 0.91},
                 cost_per_1k_tokens=0.0035,
                 typical_latency_ms=1200,
+                capability_tier=3,
             )
         )
     return providers
@@ -526,7 +531,10 @@ async def _execute_completion(
     fallback_used = False
     last_error: Optional[str] = None
 
-    for i, scored in enumerate(ranked):
+    pending: list = list(ranked)
+    i = 0
+    while pending:
+        scored = pending.pop(0)
         info = scored.provider
         allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
         if not allowed:
@@ -535,6 +543,8 @@ async def _execute_completion(
             )
             last_error = f"rate_limited:{info.name}"
             fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            i += 1
             continue
 
         ok, latency_ms, data = await _call_provider(info, effective_req)
@@ -558,6 +568,8 @@ async def _execute_completion(
             )
             last_error = f"provider_failed:{info.name}"
             fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            i += 1
             continue
 
         prompt_tokens = int(data.get("prompt_tokens", 0))
