@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import time
 import uuid
 from typing import Optional
@@ -319,6 +320,20 @@ async def _report_health(provider: str, success: bool, latency_ms: float) -> Non
         pass
 
 
+def _sla_backoff_ms(provider: ProviderInfo, intent: Intent, attempt: int) -> float:
+    """Jittered exponential backoff bounded by the provider's declared SLA.
+
+    The backoff floor doubles on each retry but is capped at one tenth of the
+    provider's per-intent SLA so a slow provider with a 10s SLA cannot stall
+    the fallback loop for a request whose budget is much tighter.
+    """
+    base_ms = 20.0 * (2 ** max(0, attempt - 1))
+    sla_ms = provider.sla_p95_latency_ms.get(intent.value, 0.0)
+    cap_ms = max(50.0, sla_ms / 10.0) if sla_ms > 0 else 200.0
+    bounded = min(base_ms, cap_ms)
+    return bounded * (1.0 + random.random() * 0.25)
+
+
 async def _publish_cost(event: CostEvent) -> None:
     assert _http is not None
     try:
@@ -533,7 +548,11 @@ async def _execute_completion(
 
     pending: list = list(ranked)
     i = 0
+    attempts = 0
     while pending:
+        if attempts > 0 and pending:
+            backoff_ms = _sla_backoff_ms(pending[0].provider, intent, attempts)
+            await asyncio.sleep(backoff_ms / 1000.0)
         scored = pending.pop(0)
         info = scored.provider
         allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
@@ -545,6 +564,7 @@ async def _execute_completion(
             fallback_used = True
             pending = policy.reorder_after_failure(pending, info.capability_tier)
             i += 1
+            attempts += 1
             continue
 
         ok, latency_ms, data = await _call_provider(info, effective_req)
@@ -570,6 +590,7 @@ async def _execute_completion(
             fallback_used = True
             pending = policy.reorder_after_failure(pending, info.capability_tier)
             i += 1
+            attempts += 1
             continue
 
         prompt_tokens = int(data.get("prompt_tokens", 0))

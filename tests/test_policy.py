@@ -206,3 +206,59 @@ def test_reorder_after_failure_demotes_higher_tier():
 
 def test_reorder_after_failure_empty_list():
     assert RoutingPolicy.reorder_after_failure([], failed_tier=2) == []
+
+
+def test_sla_breach_zeroes_latency_score():
+    """When EMA latency exceeds the per-intent SLA, latency sub-score is zeroed."""
+    from intelliroute.router.feedback import CompletionOutcome, FeedbackCollector
+
+    fc = FeedbackCollector()
+    # 'fast' has been observed running at 800ms (over its 200ms SLA)
+    fc.record(CompletionOutcome(provider="fast", latency_ms=800.0, success=True))
+    fc.record(CompletionOutcome(provider="standard", latency_ms=300.0, success=True))
+
+    providers = [
+        ProviderInfo(
+            name="fast",
+            url="http://fast",
+            model="fast-1",
+            capability={"interactive": 0.9},
+            cost_per_1k_tokens=0.002,
+            typical_latency_ms=120,
+            sla_p95_latency_ms={"interactive": 200.0},
+        ),
+        ProviderInfo(
+            name="standard",
+            url="http://standard",
+            model="standard-1",
+            capability={"interactive": 0.7},
+            cost_per_1k_tokens=0.005,
+            typical_latency_ms=400,
+            sla_p95_latency_ms={"interactive": 600.0},
+        ),
+    ]
+    policy = RoutingPolicy(feedback=fc)
+    ranked = policy.rank(providers, health={}, intent=Intent.INTERACTIVE)
+    sub = {s.provider.name: s.sub_scores for s in ranked}
+    # 'fast' breached its SLA → its latency sub-score is zeroed.
+    assert sub["fast"]["latency"] == 0.0
+    # 'standard' is in-spec and gets a non-zero latency sub-score.
+    assert sub["standard"]["latency"] > 0.0
+
+
+def test_sla_unset_does_not_demote():
+    """Providers without a declared SLA are not penalised."""
+    providers = [
+        ProviderInfo(
+            name="no-sla",
+            url="http://no-sla",
+            model="m",
+            capability={"interactive": 0.9},
+            cost_per_1k_tokens=0.001,
+            typical_latency_ms=10_000,  # very slow
+        ),
+    ]
+    policy = RoutingPolicy()
+    ranked = policy.rank(providers, health={}, intent=Intent.INTERACTIVE)
+    # Nothing else to compare against — single-provider list returns it.
+    assert ranked[0].provider.name == "no-sla"
