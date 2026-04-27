@@ -40,7 +40,7 @@ from ..common.models import (
     ProviderRegisterRequest,
     RateLimitCheck,
 )
-from .feedback import CompletionOutcome, FeedbackCollector
+from .feedback import CompletionOutcome, FeedbackCollector, compute_hallucination_signal
 from .brownout import BrownoutManager
 from .intent import classify
 from .policy import RoutingPolicy
@@ -571,14 +571,22 @@ async def _execute_completion(
         asyncio.create_task(_report_health(info.name, ok, latency_ms))
 
         # Record feedback outcome
+        prompt_chars = len(effective_req.messages[0].content) if effective_req.messages else 1
+        response_text = data.get("content", "") if data else ""
+        hallucination_signal = (
+            compute_hallucination_signal(response_text, prompt_char_count=prompt_chars)
+            if ok
+            else 0.0
+        )
         outcome = CompletionOutcome(
             provider=info.name,
             latency_ms=latency_ms,
             success=ok,
             prompt_tokens=int(data.get("prompt_tokens", 0)) if data else 0,
             completion_tokens=int(data.get("completion_tokens", 0)) if data else 0,
-            prompt_char_count=len(effective_req.messages[0].content) if effective_req.messages else 1,
-            response_char_count=len(data.get("content", "")) if data else 0,
+            prompt_char_count=prompt_chars,
+            response_char_count=len(response_text),
+            hallucination_signal=hallucination_signal,
         )
         feedback.record(outcome)
 
