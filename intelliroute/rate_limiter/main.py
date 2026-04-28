@@ -36,6 +36,12 @@ log = get_logger("rate_limiter")
 _default = BucketConfig(capacity=10, refill_rate=1.0)
 store = RateLimiterStore(default_config=_default)
 
+# Opt-in strong consistency: when enabled, a follower with an expired
+# leader lease fails closed instead of serving requests from its local
+# bucket. Trades availability for guaranteed quota correctness — used to
+# satisfy the spec's "strong consistency for quotas (avoid cost overruns)".
+_STRONG_CONSISTENCY = os.environ.get("RATE_LIMITER_STRONG_CONSISTENCY", "0") == "1"
+
 app = FastAPI(title="IntelliRoute RateLimiter")
 app.add_middleware(
     CORSMiddleware,
@@ -231,8 +237,22 @@ async def check(req: RateLimitCheck) -> RateLimitResult:
                         error=str(exc),
                     )
 
-        # Fallback to local on failure
-        pass
+        # Forward failed. Under strong-consistency mode the follower must
+        # not serve from its local bucket — fail closed and tell the caller
+        # to retry once a fresh lease is established.
+        if _STRONG_CONSISTENCY and not _election.has_valid_lease():
+            log_event(
+                log,
+                "lease_expired_fail_closed",
+                replica=_election._replica_id,
+                last_heartbeat=_election._last_heartbeat,
+            )
+            return RateLimitResult(
+                allowed=False,
+                remaining=0,
+                retry_after_ms=int(_election._config.heartbeat_timeout_s * 1000),
+                leader_replica=None,
+            )
 
     # Leader or follback: use local store
     key = f"{req.tenant_id}|{req.provider}"
