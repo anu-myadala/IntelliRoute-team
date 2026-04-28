@@ -48,6 +48,7 @@ from .policy_engine import PolicyEvaluator
 from .provider_clients import ProviderCallError, call_provider
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
+from .weight_tuner import WeightTuner
 
 log = get_logger("router")
 
@@ -58,6 +59,7 @@ policy_evaluator = PolicyEvaluator()
 request_queue = RequestQueue()
 brownout_manager = BrownoutManager()
 _tenant_brownout: dict[str, BrownoutManager] = {}
+weight_tuner = WeightTuner(policy)
 
 app = FastAPI(title="IntelliRoute Router")
 app.add_middleware(
@@ -569,6 +571,7 @@ async def _execute_completion(
 
         ok, latency_ms, data = await _call_provider(info, effective_req)
         asyncio.create_task(_report_health(info.name, ok, latency_ms))
+        weight_tuner.observe(intent, scored.sub_scores, ok)
 
         # Record feedback outcome
         prompt_chars = len(effective_req.messages[0].content) if effective_req.messages else 1
@@ -672,6 +675,34 @@ class RouteDecision(BaseModel):
     scores: dict[str, float]
     policy_evaluation: Optional[PolicyEvaluationResult] = None
     brownout_status: Optional[BrownoutStatus] = None
+
+
+@app.get("/weights")
+async def get_weights() -> dict:
+    """Current per-intent multi-objective weights and tuner samples."""
+    out: dict[str, dict] = {}
+    for intent, weights in policy._weights.items():
+        snap = weight_tuner.snapshot(intent)
+        out[intent.value] = {
+            "latency": round(weights.latency, 4),
+            "cost": round(weights.cost, 4),
+            "capability": round(weights.capability, 4),
+            "success": round(weights.success, 4),
+            "tuner_samples": snap.samples,
+            "tuner_net_credit": {k: round(v, 4) for k, v in snap.net_credit.items()},
+        }
+    return out
+
+
+@app.post("/weights/rebalance/{intent}")
+async def rebalance_weights(intent: str) -> dict:
+    """Manually trigger a tuner rebalance for a given intent."""
+    try:
+        intent_enum = Intent(intent)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"unknown intent: {intent}")
+    applied = weight_tuner.maybe_rebalance(intent_enum)
+    return {"intent": intent, "rebalanced": applied}
 
 
 @app.get("/feedback")
