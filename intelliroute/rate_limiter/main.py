@@ -267,6 +267,65 @@ async def set_config(payload: ConfigPayload) -> dict:
     return {"updated": payload.key}
 
 
+class TenantProviderQuota(BaseModel):
+    tenant_id: str
+    provider: str
+    capacity: float
+    refill_rate: float
+
+
+@app.post("/config/tenant-provider")
+async def set_tenant_provider_quota(payload: TenantProviderQuota) -> dict:
+    store.set_tenant_provider_quota(
+        payload.tenant_id,
+        payload.provider,
+        BucketConfig(payload.capacity, payload.refill_rate),
+    )
+    return {"updated": f"{payload.tenant_id}|{payload.provider}"}
+
+
+class TenantQuota(BaseModel):
+    tenant_id: str
+    capacity: float
+    refill_rate: float
+
+
+@app.post("/config/tenant")
+async def set_tenant_quota(payload: TenantQuota) -> dict:
+    store.set_tenant_default(
+        payload.tenant_id,
+        BucketConfig(payload.capacity, payload.refill_rate),
+    )
+    return {"updated": f"{payload.tenant_id}|*"}
+
+
+class ProviderQuota(BaseModel):
+    provider: str
+    capacity: float
+    refill_rate: float
+
+
+@app.post("/config/provider")
+async def set_provider_quota(payload: ProviderQuota) -> dict:
+    store.set_provider_default(
+        payload.provider,
+        BucketConfig(payload.capacity, payload.refill_rate),
+    )
+    return {"updated": f"*|{payload.provider}"}
+
+
+@app.get("/config/resolve/{tenant_id}/{provider}")
+async def resolve_quota(tenant_id: str, provider: str) -> dict:
+    cfg, source = store.resolve_config(f"{tenant_id}|{provider}")
+    return {
+        "tenant_id": tenant_id,
+        "provider": provider,
+        "capacity": cfg.capacity,
+        "refill_rate": cfg.refill_rate,
+        "source": source,
+    }
+
+
 @app.get("/log/since/{offset}")
 async def log_since(offset: int) -> dict:
     """Return replication log entries since the given offset."""

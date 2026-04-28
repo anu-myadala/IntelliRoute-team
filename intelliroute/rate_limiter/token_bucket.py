@@ -78,10 +78,21 @@ class BucketConfig:
 class RateLimiterStore:
     """Threadsafe store of named token buckets.
 
-    ``configs`` is a mapping from a key (e.g. ``"tenant_id|provider"``) to
-    its bucket configuration. If a key has no configured bucket the store
-    falls back to ``default_config``.
+    ``configs`` is a mapping from a key to its bucket configuration. The
+    store performs a layered lookup so the same bucket key (always
+    ``"tenant_id|provider"``) can be governed by progressively more
+    specific limits:
+
+    1. exact pair  ``tenant_id|provider``   (highest priority)
+    2. tenant any-provider override ``tenant_id|*``
+    3. provider any-tenant default  ``*|provider``
+    4. global ``default_config``               (fallback)
+
+    Each tenant/provider pair still has its own bucket state — the layering
+    only governs the configuration the bucket is built with.
     """
+
+    _WILDCARD = "*"
 
     def __init__(
         self,
@@ -110,13 +121,63 @@ class RateLimiterStore:
     def set_config(self, key: str, config: BucketConfig) -> None:
         with self._lock:
             self._configs[key] = config
-            # drop existing bucket so it is recreated under the new config
-            self._buckets.pop(key, None)
+            self._invalidate_buckets_locked(key)
+
+    def set_tenant_provider_quota(
+        self, tenant_id: str, provider: str, config: BucketConfig
+    ) -> None:
+        """Most-specific override: ``tenant|provider``."""
+        self.set_config(f"{tenant_id}|{provider}", config)
+
+    def set_tenant_default(self, tenant_id: str, config: BucketConfig) -> None:
+        """Tenant-wide default applied when no exact pair is set."""
+        self.set_config(f"{tenant_id}|{self._WILDCARD}", config)
+
+    def set_provider_default(self, provider: str, config: BucketConfig) -> None:
+        """Provider-wide default applied when no tenant override is set."""
+        self.set_config(f"{self._WILDCARD}|{provider}", config)
+
+    def resolve_config(self, key: str) -> tuple[BucketConfig, str]:
+        """Return ``(config, source_key)`` after walking the layered fallback."""
+        with self._lock:
+            return self._resolve_config_locked(key)
+
+    def _resolve_config_locked(self, key: str) -> tuple[BucketConfig, str]:
+        if key in self._configs:
+            return self._configs[key], key
+        tenant, _, provider = key.partition("|")
+        tenant_default = f"{tenant}|{self._WILDCARD}"
+        if tenant_default in self._configs:
+            return self._configs[tenant_default], tenant_default
+        provider_default = f"{self._WILDCARD}|{provider}"
+        if provider_default in self._configs:
+            return self._configs[provider_default], provider_default
+        return self._default, "*"
+
+    def _invalidate_buckets_locked(self, config_key: str) -> None:
+        """Drop any concrete bucket whose effective config is now stale."""
+        if "|" not in config_key:
+            return
+        tenant, _, provider = config_key.partition("|")
+        if tenant == self._WILDCARD and provider == self._WILDCARD:
+            self._buckets.clear()
+            return
+        if tenant == self._WILDCARD:
+            self._buckets = {
+                k: b for k, b in self._buckets.items() if k.split("|", 1)[1] != provider
+            }
+            return
+        if provider == self._WILDCARD:
+            self._buckets = {
+                k: b for k, b in self._buckets.items() if k.split("|", 1)[0] != tenant
+            }
+            return
+        self._buckets.pop(config_key, None)
 
     def _ensure_bucket(self, key: str) -> TokenBucket:
         bucket = self._buckets.get(key)
         if bucket is None:
-            cfg = self._configs.get(key, self._default)
+            cfg, _src = self._resolve_config_locked(key)
             bucket = TokenBucket(capacity=cfg.capacity, refill_rate=cfg.refill_rate)
             self._buckets[key] = bucket
         return bucket
