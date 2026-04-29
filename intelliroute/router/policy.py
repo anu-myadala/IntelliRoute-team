@@ -86,6 +86,8 @@ class RoutingPolicy:
         health: dict[str, ProviderHealth],
         intent: Intent,
         latency_budget_ms: int | None = None,
+        confidence_hint: float | None = None,
+        premium_threshold: float = 0.7,
     ) -> list[ScoredProvider]:
         if not providers:
             return []
@@ -145,6 +147,17 @@ class RoutingPolicy:
                     anomaly_penalty = 0.1 * metrics.anomaly_score
 
             capability_score = p.capability.get(intent.value, 0.5)
+
+            # Confidence-gated premium demotion: when the caller signalled
+            # low confidence that this request actually needs premium
+            # quality, zero out the capability sub-score for tier-3
+            # providers so cheaper siblings outrank them.
+            if (
+                confidence_hint is not None
+                and confidence_hint < premium_threshold
+                and p.capability_tier >= 3
+            ):
+                capability_score = 0.0
 
             latency_score = _normalize_latency(latency_est, worst_latency)
             cost_score = _normalize_cost(p.cost_per_1k_tokens, worst_cost)

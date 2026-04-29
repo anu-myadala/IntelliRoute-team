@@ -43,6 +43,12 @@ class CompletionRequest(BaseModel):
     intent_hint: Optional[Intent] = None
     # Caller can set a hard latency budget in ms; router may use it to pick faster models
     latency_budget_ms: Optional[int] = None
+    # Caller's self-assessed confidence that this request actually needs a
+    # premium model, in [0, 1]. When below the policy's premium threshold
+    # the router demotes tier-3 providers — this implements the spec's
+    # "use premium model only above confidence threshold" rule without
+    # requiring the policy_engine to know per-call.
+    confidence_hint: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class PolicyEvaluationResult(BaseModel):
