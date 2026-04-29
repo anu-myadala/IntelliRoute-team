@@ -246,6 +246,44 @@ def test_sla_breach_zeroes_latency_score():
     assert sub["standard"]["latency"] > 0.0
 
 
+def test_low_confidence_zeros_premium_capability():
+    policy = RoutingPolicy()
+    providers = _tiered_providers()
+    ranked = policy.rank(
+        providers,
+        health={},
+        intent=Intent.REASONING,
+        confidence_hint=0.3,
+    )
+    sub = {s.provider.name: s.sub_scores for s in ranked}
+    # Premium (tier 3) capability sub-score is zeroed under low confidence.
+    assert sub["premium"]["capability"] == 0.0
+    # Standard (tier 2) and cheap (tier 1) keep their capability scores.
+    assert sub["standard"]["capability"] > 0.0
+    assert sub["cheap"]["capability"] > 0.0
+
+
+def test_high_confidence_keeps_premium_capability():
+    policy = RoutingPolicy()
+    providers = _tiered_providers()
+    ranked = policy.rank(
+        providers,
+        health={},
+        intent=Intent.REASONING,
+        confidence_hint=0.9,
+    )
+    sub = {s.provider.name: s.sub_scores for s in ranked}
+    assert sub["premium"]["capability"] > 0.0
+
+
+def test_no_confidence_hint_does_not_demote_premium():
+    policy = RoutingPolicy()
+    providers = _tiered_providers()
+    ranked = policy.rank(providers, health={}, intent=Intent.REASONING)
+    sub = {s.provider.name: s.sub_scores for s in ranked}
+    assert sub["premium"]["capability"] > 0.0
+
+
 def test_sla_unset_does_not_demote():
     """Providers without a declared SLA are not penalised."""
     providers = [
