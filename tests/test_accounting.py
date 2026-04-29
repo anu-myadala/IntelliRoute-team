@@ -57,3 +57,35 @@ def test_tenants_are_isolated():
     acc.record(_event("t2", "fast", cost=0.05))
     assert acc.summary("t1").total_cost_usd == 0.01
     assert acc.summary("t2").total_cost_usd == 0.05
+
+
+def test_headroom_returns_none_when_no_budget():
+    acc = CostAccountant()
+    assert acc.headroom("t1") is None
+
+
+def test_headroom_decreases_with_spend():
+    acc = CostAccountant(budgets={"t1": 1.0})
+    assert acc.headroom("t1") == 1.0
+    acc.record(_event("t1", "fast", cost=0.3))
+    assert round(acc.headroom("t1"), 4) == 0.7
+
+
+def test_would_exceed_false_when_no_budget():
+    acc = CostAccountant()
+    assert acc.would_exceed("t1", projected_cost_usd=999.0) is False
+
+
+def test_would_exceed_true_when_projected_overshoots():
+    acc = CostAccountant(budgets={"t1": 1.0})
+    acc.record(_event("t1", "fast", cost=0.8))
+    # Headroom is now 0.2; a 0.5 projected cost would overshoot.
+    assert acc.would_exceed("t1", projected_cost_usd=0.5) is True
+    assert acc.would_exceed("t1", projected_cost_usd=0.1) is False
+
+
+def test_would_exceed_after_budget_already_breached():
+    acc = CostAccountant(budgets={"t1": 1.0})
+    acc.record(_event("t1", "fast", cost=1.5))
+    # Headroom is negative; any positive projected cost would still exceed.
+    assert acc.would_exceed("t1", projected_cost_usd=0.001) is True
