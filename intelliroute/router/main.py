@@ -400,6 +400,8 @@ async def _prepare_routing(
     list[ProviderInfo],
     PolicyEvaluationResult | None,
     BrownoutStatus,
+    float | None,
+    float,
 ]:
     intent = classify(req)
     health = await _fetch_health_snapshot()
@@ -456,8 +458,8 @@ async def _prepare_routing(
         brownout_prefer_low_latency=brownout_manager.config.prefer_low_latency_for_medium_and_low,
     )
     if not policy_evaluator._config.enabled:
-        return intent, health, list(all_providers), None, bs_model
-    return intent, health, candidates, policy_result, bs_model
+        return intent, health, list(all_providers), None, bs_model, tenant_budget, tenant_spent
+    return intent, health, candidates, policy_result, bs_model, tenant_budget, tenant_spent
 
 
 async def _queue_worker(worker_id: int) -> None:
@@ -501,7 +503,7 @@ async def _execute_completion(
 ) -> CompletionResponse:
     """Core completion logic: ranking, provider tries, and feedback recording."""
     started = time.monotonic()
-    intent, health, candidates, pe, bs = await _prepare_routing(req)
+    intent, health, candidates, pe, bs, tenant_budget, tenant_spent = await _prepare_routing(req)
     effective_req = req
     if (
         bs.is_degraded
@@ -555,6 +557,28 @@ async def _execute_completion(
         if attempts > 0 and pending:
             backoff_ms = _sla_backoff_ms(pending[0].provider, intent, attempts)
             await asyncio.sleep(backoff_ms / 1000.0)
+        # Budget-aware pre-call gate: if the next-up provider would push the
+        # tenant past its budget, demote to the cheapest still-pending option.
+        # This implements the spec's "fallback if marginal gain < cost delta"
+        # rule without requiring the policy_engine to know about live spend.
+        if tenant_budget is not None and len(pending) >= 1:
+            head = pending[0]
+            projected = (effective_req.max_tokens / 1000.0) * head.provider.cost_per_1k_tokens
+            if tenant_spent + projected > tenant_budget:
+                cheaper = min(pending, key=lambda s: s.provider.cost_per_1k_tokens)
+                if cheaper is not head:
+                    log_event(
+                        log,
+                        "budget_gate_demoted",
+                        from_provider=head.provider.name,
+                        to_provider=cheaper.provider.name,
+                        projected_cost=round(projected, 6),
+                        tenant_budget=tenant_budget,
+                        tenant_spent=tenant_spent,
+                    )
+                    pending.remove(cheaper)
+                    pending.insert(0, cheaper)
+                    fallback_used = True
         scored = pending.pop(0)
         info = scored.provider
         allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
@@ -775,7 +799,7 @@ async def brownout_status_for_tenant(tenant_id: str) -> BrownoutStatus:
 @app.post("/decide", response_model=RouteDecision)
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
-    intent, health, candidates, pe, bs = await _prepare_routing(req)
+    intent, health, candidates, pe, bs, _budget, _spent = await _prepare_routing(req)
     ranked = policy.rank(
         candidates, health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
     )

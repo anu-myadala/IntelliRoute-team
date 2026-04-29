@@ -69,3 +69,17 @@ async def get_budget(tenant_id: str) -> dict:
 @app.get("/alerts")
 async def alerts() -> dict:
     return {"alerts": accountant.alerts()}
+
+
+@app.get("/budget/{tenant_id}/headroom")
+async def headroom(tenant_id: str) -> dict:
+    return {"tenant_id": tenant_id, "headroom_usd": accountant.headroom(tenant_id)}
+
+
+@app.get("/budget/{tenant_id}/check")
+async def check_budget(tenant_id: str, projected_cost_usd: float = 0.0) -> dict:
+    return {
+        "tenant_id": tenant_id,
+        "projected_cost_usd": projected_cost_usd,
+        "would_exceed": accountant.would_exceed(tenant_id, projected_cost_usd),
+    }
