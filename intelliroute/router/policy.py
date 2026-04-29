@@ -86,6 +86,8 @@ class RoutingPolicy:
         health: dict[str, ProviderHealth],
         intent: Intent,
         latency_budget_ms: int | None = None,
+        confidence_hint: float | None = None,
+        premium_threshold: float = 0.7,
     ) -> list[ScoredProvider]:
         if not providers:
             return []
@@ -146,6 +148,17 @@ class RoutingPolicy:
 
             capability_score = p.capability.get(intent.value, 0.5)
 
+            # Confidence-gated premium demotion: when the caller signalled
+            # low confidence that this request actually needs premium
+            # quality, zero out the capability sub-score for tier-3
+            # providers so cheaper siblings outrank them.
+            if (
+                confidence_hint is not None
+                and confidence_hint < premium_threshold
+                and p.capability_tier >= 3
+            ):
+                capability_score = 0.0
+
             latency_score = _normalize_latency(latency_est, worst_latency)
             cost_score = _normalize_cost(p.cost_per_1k_tokens, worst_cost)
 
@@ -153,6 +166,14 @@ class RoutingPolicy:
             # exceeds the caller's budget, zero-out its latency sub-score so
             # it is only picked if nothing else is available.
             if latency_budget_ms is not None and latency_est > latency_budget_ms:
+                latency_score = 0.0
+
+            # SLA breach demotion: if the provider declares an SLA for this
+            # intent and the observed EMA latency already exceeds it, treat
+            # the provider as out-of-spec and zero its latency sub-score so
+            # it is deprioritised behind any in-spec sibling.
+            sla_ms = p.sla_p95_latency_ms.get(intent.value)
+            if sla_ms is not None and sla_ms > 0 and latency_est > sla_ms:
                 latency_score = 0.0
 
             score = (
@@ -177,3 +198,20 @@ class RoutingPolicy:
 
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored
+
+    @staticmethod
+    def reorder_after_failure(
+        remaining: list[ScoredProvider], failed_tier: int
+    ) -> list[ScoredProvider]:
+        """Bias the next-attempt order toward graceful capability degradation.
+
+        After a primary fails for a non-capability reason (overload, timeout,
+        rate limit), prefer same-or-lower-tier siblings before reaching for
+        another premium model. Stable within each band so the underlying
+        multi-objective ranking is preserved as the tiebreaker.
+        """
+        if not remaining:
+            return remaining
+        same_or_lower = [s for s in remaining if s.provider.capability_tier <= failed_tier]
+        higher = [s for s in remaining if s.provider.capability_tier > failed_tier]
+        return same_or_lower + higher

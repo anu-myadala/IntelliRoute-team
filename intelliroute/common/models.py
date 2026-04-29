@@ -43,6 +43,12 @@ class CompletionRequest(BaseModel):
     intent_hint: Optional[Intent] = None
     # Caller can set a hard latency budget in ms; router may use it to pick faster models
     latency_budget_ms: Optional[int] = None
+    # Caller's self-assessed confidence that this request actually needs a
+    # premium model, in [0, 1]. When below the policy's premium threshold
+    # the router demotes tier-3 providers — this implements the spec's
+    # "use premium model only above confidence threshold" rule without
+    # requiring the policy_engine to know per-call.
+    confidence_hint: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class PolicyEvaluationResult(BaseModel):
@@ -101,6 +107,17 @@ class ProviderInfo(BaseModel):
     typical_latency_ms: float = 500.0
     # Max concurrent in-flight requests recommended
     max_concurrency: int = 32
+    # Capability tier: 1 = small/cheap, 2 = standard, 3 = premium. Used by the
+    # graceful-degradation failover ladder: when a primary fails due to
+    # overload/timeout, the router prefers a same-or-lower-tier sibling
+    # rather than retrying another premium model.
+    capability_tier: int = Field(default=2, ge=1, le=3)
+    # Per-intent SLA: declared p95 latency the operator considers acceptable
+    # for this provider on a given intent class (ms). Keys match Intent.value.
+    # Empty dict means "no SLA declared" — the ranker treats it as no constraint.
+    sla_p95_latency_ms: dict[str, float] = Field(default_factory=dict)
+    # Per-provider retry budget used by the fallback loop's backoff calculation.
+    max_retries: int = 3
 
 
 class ProviderRegisterRequest(BaseModel):
