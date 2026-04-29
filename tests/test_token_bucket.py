@@ -112,3 +112,65 @@ def test_replay_log_entry_appends_to_log():
     initial_length = store.log_length()
     store.replay_log_entry(ts=100.0, key="t|p", amount=1.0, allowed=True)
     assert store.log_length() == initial_length + 1
+
+
+def test_quota_hierarchy_exact_pair_wins():
+    store = RateLimiterStore(default_config=BucketConfig(capacity=1, refill_rate=1))
+    store.set_provider_default("p1", BucketConfig(capacity=5, refill_rate=1))
+    store.set_tenant_default("t1", BucketConfig(capacity=10, refill_rate=1))
+    store.set_tenant_provider_quota("t1", "p1", BucketConfig(capacity=99, refill_rate=1))
+    cfg, source = store.resolve_config("t1|p1")
+    assert cfg.capacity == 99
+    assert source == "t1|p1"
+
+
+def test_quota_hierarchy_tenant_default_beats_provider_default():
+    store = RateLimiterStore(default_config=BucketConfig(capacity=1, refill_rate=1))
+    store.set_provider_default("p1", BucketConfig(capacity=5, refill_rate=1))
+    store.set_tenant_default("t1", BucketConfig(capacity=10, refill_rate=1))
+    cfg, source = store.resolve_config("t1|p1")
+    assert cfg.capacity == 10
+    assert source == "t1|*"
+
+
+def test_quota_hierarchy_provider_default_beats_global():
+    store = RateLimiterStore(default_config=BucketConfig(capacity=1, refill_rate=1))
+    store.set_provider_default("p1", BucketConfig(capacity=5, refill_rate=1))
+    cfg, source = store.resolve_config("t-other|p1")
+    assert cfg.capacity == 5
+    assert source == "*|p1"
+
+
+def test_quota_hierarchy_falls_through_to_default():
+    store = RateLimiterStore(default_config=BucketConfig(capacity=3, refill_rate=1))
+    cfg, source = store.resolve_config("anyone|anywhere")
+    assert cfg.capacity == 3
+    assert source == "*"
+
+
+def test_set_tenant_default_invalidates_existing_buckets():
+    """Bumping a tenant default rebuilds existing buckets under that tenant."""
+    clock = FakeClock()
+    store = RateLimiterStore(
+        default_config=BucketConfig(capacity=2, refill_rate=1),
+        clock=clock,
+    )
+    # Drain the bucket under the global default.
+    assert store.try_consume("t1|p1")[0] is True
+    assert store.try_consume("t1|p1")[0] is True
+    assert store.try_consume("t1|p1")[0] is False
+    # Raise the tenant default; the next call should see a fresh, larger bucket.
+    store.set_tenant_default("t1", BucketConfig(capacity=10, refill_rate=1))
+    allowed, remaining, _ = store.try_consume("t1|p1")
+    assert allowed is True
+    assert remaining == 9
+
+
+def test_provider_default_does_not_leak_across_providers():
+    store = RateLimiterStore(default_config=BucketConfig(capacity=1, refill_rate=1))
+    store.set_provider_default("p1", BucketConfig(capacity=10, refill_rate=1))
+    cfg_p1, _ = store.resolve_config("t1|p1")
+    cfg_p2, src_p2 = store.resolve_config("t1|p2")
+    assert cfg_p1.capacity == 10
+    assert cfg_p2.capacity == 1
+    assert src_p2 == "*"
