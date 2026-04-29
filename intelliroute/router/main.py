@@ -524,7 +524,11 @@ async def _execute_completion(
         )
 
     ranked = policy.rank(
-        candidates, health=health, intent=intent, latency_budget_ms=effective_req.latency_budget_ms
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=effective_req.latency_budget_ms,
+        confidence_hint=effective_req.confidence_hint,
     )
     if not ranked:
         _record_brownout_result(
@@ -801,7 +805,11 @@ async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
     intent, health, candidates, pe, bs, _budget, _spent = await _prepare_routing(req)
     ranked = policy.rank(
-        candidates, health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=req.latency_budget_ms,
+        confidence_hint=req.confidence_hint,
     )
     return RouteDecision(
         intent=intent.value,
