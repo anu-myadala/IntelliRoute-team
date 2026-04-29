@@ -116,6 +116,27 @@ class LeaderElection:
 
         return False
 
+    def has_valid_lease(self) -> bool:
+        """Strong-consistency check: True if this replica may safely serve writes.
+
+        Leaders always hold a valid lease. Followers are valid only while a
+        fresh heartbeat from the leader is on file (within
+        ``heartbeat_timeout_s``). Single-replica deployments — no peers
+        configured — are treated as always-valid since there is no one to
+        coordinate with. Used by the rate limiter to fail closed when
+        ``RATE_LIMITER_STRONG_CONSISTENCY`` is enabled and the lease has
+        expired, instead of silently falling back to local-only decisions.
+        """
+        if self._state == ElectionState.LEADER:
+            return True
+        if not self._peers:
+            return True
+        if self._last_heartbeat == 0.0:
+            # We have peers but have never heard from a leader → no lease.
+            return False
+        elapsed = time.time() - self._last_heartbeat
+        return elapsed < self._config.heartbeat_timeout_s
+
     @property
     def is_leader(self) -> bool:
         """Whether this replica is the current leader."""

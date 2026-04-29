@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import time
 import uuid
 from typing import Optional
@@ -39,7 +40,7 @@ from ..common.models import (
     ProviderRegisterRequest,
     RateLimitCheck,
 )
-from .feedback import CompletionOutcome, FeedbackCollector
+from .feedback import CompletionOutcome, FeedbackCollector, compute_hallucination_signal
 from .brownout import BrownoutManager
 from .intent import classify
 from .policy import RoutingPolicy
@@ -47,6 +48,7 @@ from .policy_engine import PolicyEvaluator
 from .provider_clients import ProviderCallError, call_provider
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
+from .weight_tuner import WeightTuner
 
 log = get_logger("router")
 
@@ -57,6 +59,7 @@ policy_evaluator = PolicyEvaluator()
 request_queue = RequestQueue()
 brownout_manager = BrownoutManager()
 _tenant_brownout: dict[str, BrownoutManager] = {}
+weight_tuner = WeightTuner(policy)
 
 app = FastAPI(title="IntelliRoute Router")
 app.add_middleware(
@@ -112,6 +115,7 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.85, "reasoning": 0.45, "batch": 0.5, "code": 0.6},
             cost_per_1k_tokens=0.002,
             typical_latency_ms=120,
+            capability_tier=2,
         ),
         ProviderInfo(
             name="mock-smart",
@@ -121,6 +125,7 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.7, "reasoning": 0.95, "batch": 0.8, "code": 0.9},
             cost_per_1k_tokens=0.02,
             typical_latency_ms=900,
+            capability_tier=3,
         ),
         ProviderInfo(
             name="mock-cheap",
@@ -130,6 +135,7 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.55, "reasoning": 0.4, "batch": 0.75, "code": 0.45},
             cost_per_1k_tokens=0.0003,
             typical_latency_ms=600,
+            capability_tier=1,
         ),
     ]
 
@@ -146,6 +152,7 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.93, "reasoning": 0.76, "batch": 0.88, "code": 0.74},
                 cost_per_1k_tokens=0.0007,
                 typical_latency_ms=500,
+                capability_tier=2,
             )
         )
     if settings.gemini_api_key:
@@ -158,6 +165,7 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.72, "reasoning": 0.97, "batch": 0.68, "code": 0.91},
                 cost_per_1k_tokens=0.0035,
                 typical_latency_ms=1200,
+                capability_tier=3,
             )
         )
     return providers
@@ -314,6 +322,20 @@ async def _report_health(provider: str, success: bool, latency_ms: float) -> Non
         pass
 
 
+def _sla_backoff_ms(provider: ProviderInfo, intent: Intent, attempt: int) -> float:
+    """Jittered exponential backoff bounded by the provider's declared SLA.
+
+    The backoff floor doubles on each retry but is capped at one tenth of the
+    provider's per-intent SLA so a slow provider with a 10s SLA cannot stall
+    the fallback loop for a request whose budget is much tighter.
+    """
+    base_ms = 20.0 * (2 ** max(0, attempt - 1))
+    sla_ms = provider.sla_p95_latency_ms.get(intent.value, 0.0)
+    cap_ms = max(50.0, sla_ms / 10.0) if sla_ms > 0 else 200.0
+    bounded = min(base_ms, cap_ms)
+    return bounded * (1.0 + random.random() * 0.25)
+
+
 async def _publish_cost(event: CostEvent) -> None:
     assert _http is not None
     try:
@@ -378,6 +400,8 @@ async def _prepare_routing(
     list[ProviderInfo],
     PolicyEvaluationResult | None,
     BrownoutStatus,
+    float | None,
+    float,
 ]:
     intent = classify(req)
     health = await _fetch_health_snapshot()
@@ -434,8 +458,8 @@ async def _prepare_routing(
         brownout_prefer_low_latency=brownout_manager.config.prefer_low_latency_for_medium_and_low,
     )
     if not policy_evaluator._config.enabled:
-        return intent, health, list(all_providers), None, bs_model
-    return intent, health, candidates, policy_result, bs_model
+        return intent, health, list(all_providers), None, bs_model, tenant_budget, tenant_spent
+    return intent, health, candidates, policy_result, bs_model, tenant_budget, tenant_spent
 
 
 async def _queue_worker(worker_id: int) -> None:
@@ -479,7 +503,7 @@ async def _execute_completion(
 ) -> CompletionResponse:
     """Core completion logic: ranking, provider tries, and feedback recording."""
     started = time.monotonic()
-    intent, health, candidates, pe, bs = await _prepare_routing(req)
+    intent, health, candidates, pe, bs, tenant_budget, tenant_spent = await _prepare_routing(req)
     effective_req = req
     if (
         bs.is_degraded
@@ -500,7 +524,11 @@ async def _execute_completion(
         )
 
     ranked = policy.rank(
-        candidates, health=health, intent=intent, latency_budget_ms=effective_req.latency_budget_ms
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=effective_req.latency_budget_ms,
+        confidence_hint=effective_req.confidence_hint,
     )
     if not ranked:
         _record_brownout_result(
@@ -526,7 +554,36 @@ async def _execute_completion(
     fallback_used = False
     last_error: Optional[str] = None
 
-    for i, scored in enumerate(ranked):
+    pending: list = list(ranked)
+    i = 0
+    attempts = 0
+    while pending:
+        if attempts > 0 and pending:
+            backoff_ms = _sla_backoff_ms(pending[0].provider, intent, attempts)
+            await asyncio.sleep(backoff_ms / 1000.0)
+        # Budget-aware pre-call gate: if the next-up provider would push the
+        # tenant past its budget, demote to the cheapest still-pending option.
+        # This implements the spec's "fallback if marginal gain < cost delta"
+        # rule without requiring the policy_engine to know about live spend.
+        if tenant_budget is not None and len(pending) >= 1:
+            head = pending[0]
+            projected = (effective_req.max_tokens / 1000.0) * head.provider.cost_per_1k_tokens
+            if tenant_spent + projected > tenant_budget:
+                cheaper = min(pending, key=lambda s: s.provider.cost_per_1k_tokens)
+                if cheaper is not head:
+                    log_event(
+                        log,
+                        "budget_gate_demoted",
+                        from_provider=head.provider.name,
+                        to_provider=cheaper.provider.name,
+                        projected_cost=round(projected, 6),
+                        tenant_budget=tenant_budget,
+                        tenant_spent=tenant_spent,
+                    )
+                    pending.remove(cheaper)
+                    pending.insert(0, cheaper)
+                    fallback_used = True
+        scored = pending.pop(0)
         info = scored.provider
         allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
         if not allowed:
@@ -535,20 +592,32 @@ async def _execute_completion(
             )
             last_error = f"rate_limited:{info.name}"
             fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            i += 1
+            attempts += 1
             continue
 
         ok, latency_ms, data = await _call_provider(info, effective_req)
         asyncio.create_task(_report_health(info.name, ok, latency_ms))
+        weight_tuner.observe(intent, scored.sub_scores, ok)
 
         # Record feedback outcome
+        prompt_chars = len(effective_req.messages[0].content) if effective_req.messages else 1
+        response_text = data.get("content", "") if data else ""
+        hallucination_signal = (
+            compute_hallucination_signal(response_text, prompt_char_count=prompt_chars)
+            if ok
+            else 0.0
+        )
         outcome = CompletionOutcome(
             provider=info.name,
             latency_ms=latency_ms,
             success=ok,
             prompt_tokens=int(data.get("prompt_tokens", 0)) if data else 0,
             completion_tokens=int(data.get("completion_tokens", 0)) if data else 0,
-            prompt_char_count=len(effective_req.messages[0].content) if effective_req.messages else 1,
-            response_char_count=len(data.get("content", "")) if data else 0,
+            prompt_char_count=prompt_chars,
+            response_char_count=len(response_text),
+            hallucination_signal=hallucination_signal,
         )
         feedback.record(outcome)
 
@@ -558,6 +627,9 @@ async def _execute_completion(
             )
             last_error = f"provider_failed:{info.name}"
             fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            i += 1
+            attempts += 1
             continue
 
         prompt_tokens = int(data.get("prompt_tokens", 0))
@@ -633,6 +705,34 @@ class RouteDecision(BaseModel):
     brownout_status: Optional[BrownoutStatus] = None
 
 
+@app.get("/weights")
+async def get_weights() -> dict:
+    """Current per-intent multi-objective weights and tuner samples."""
+    out: dict[str, dict] = {}
+    for intent, weights in policy._weights.items():
+        snap = weight_tuner.snapshot(intent)
+        out[intent.value] = {
+            "latency": round(weights.latency, 4),
+            "cost": round(weights.cost, 4),
+            "capability": round(weights.capability, 4),
+            "success": round(weights.success, 4),
+            "tuner_samples": snap.samples,
+            "tuner_net_credit": {k: round(v, 4) for k, v in snap.net_credit.items()},
+        }
+    return out
+
+
+@app.post("/weights/rebalance/{intent}")
+async def rebalance_weights(intent: str) -> dict:
+    """Manually trigger a tuner rebalance for a given intent."""
+    try:
+        intent_enum = Intent(intent)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"unknown intent: {intent}")
+    applied = weight_tuner.maybe_rebalance(intent_enum)
+    return {"intent": intent, "rebalanced": applied}
+
+
 @app.get("/feedback")
 async def get_feedback() -> dict:
     """Return all feedback metrics collected so far."""
@@ -703,9 +803,13 @@ async def brownout_status_for_tenant(tenant_id: str) -> BrownoutStatus:
 @app.post("/decide", response_model=RouteDecision)
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
-    intent, health, candidates, pe, bs = await _prepare_routing(req)
+    intent, health, candidates, pe, bs, _budget, _spent = await _prepare_routing(req)
     ranked = policy.rank(
-        candidates, health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=req.latency_budget_ms,
+        confidence_hint=req.confidence_hint,
     )
     return RouteDecision(
         intent=intent.value,

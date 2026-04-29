@@ -148,6 +148,48 @@ def test_election_config_defaults():
     assert config.heartbeat_timeout_s == 3.0
 
 
+def test_leader_always_has_valid_lease():
+    election = LeaderElection("rl-0", [Peer(replica_id="rl-1", url="http://x")])
+    election.declare_victory()
+    assert election.has_valid_lease() is True
+
+
+def test_single_replica_treated_as_valid_lease():
+    """No peers configured → lease is meaningless, always valid."""
+    election = LeaderElection("rl-0", [])
+    assert election.has_valid_lease() is True
+
+
+def test_fresh_follower_with_peers_has_no_lease():
+    """A follower that has never received a heartbeat must not hold a lease."""
+    election = LeaderElection("rl-0", [Peer(replica_id="rl-1", url="http://x")])
+    assert election.has_valid_lease() is False
+
+
+def test_follower_with_recent_heartbeat_has_valid_lease():
+    election = LeaderElection(
+        "rl-0",
+        [Peer(replica_id="rl-1", url="http://x")],
+        ElectionConfig(heartbeat_timeout_s=2.0),
+    )
+    election.receive_victory("rl-1")
+    election.receive_heartbeat("rl-1")
+    assert election.has_valid_lease() is True
+
+
+def test_follower_lease_expires_after_timeout():
+    import time
+
+    config = ElectionConfig(heartbeat_timeout_s=0.1)
+    election = LeaderElection(
+        "rl-0", [Peer(replica_id="rl-1", url="http://x")], config
+    )
+    election.receive_victory("rl-1")
+    assert election.has_valid_lease() is True
+    time.sleep(0.15)
+    assert election.has_valid_lease() is False
+
+
 def test_election_self_not_counted_in_comparisons():
     """Test that self is not counted when comparing IDs for election win."""
     # When rl-0 is the highest ID among all peers
