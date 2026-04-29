@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Optional
 
 from ..common.models import CostEvent, CostSummary
 
@@ -89,3 +90,27 @@ class CostAccountant:
     def alerts(self) -> list[str]:
         with self._lock:
             return list(self._alerts)
+
+    def headroom(self, tenant_id: str) -> Optional[float]:
+        """Return remaining USD budget, or ``None`` if no budget is set.
+
+        Negative headroom means the tenant has already exceeded its budget.
+        """
+        with self._lock:
+            budget = self._budgets.get(tenant_id)
+            if budget is None:
+                return None
+            spent = self._rollups[tenant_id].total_cost_usd if tenant_id in self._rollups else 0.0
+            return budget - spent
+
+    def would_exceed(self, tenant_id: str, projected_cost_usd: float) -> bool:
+        """Is the projected cost large enough to push spend past the budget?
+
+        Returns False when no budget is set (unbounded), otherwise returns
+        True iff (current_spend + projected) exceeds the budget. Used by the
+        router's pre-call gate to demote toward a cheaper provider.
+        """
+        h = self.headroom(tenant_id)
+        if h is None:
+            return False
+        return projected_cost_usd > h
