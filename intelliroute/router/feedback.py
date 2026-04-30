@@ -98,7 +98,19 @@ class ProviderMetrics:
     success_rate_ema: float = 1.0
     token_efficiency_ema: float = 1.0
     anomaly_score: float = 0.0
+    quality_score: float = 1.0
     sample_count: int = 0
+
+
+def _compute_quality_score(success_rate_ema: float, anomaly_score: float) -> float:
+    """Simple bounded quality heuristic in [0, 1].
+
+    We bias toward observed success while still penalizing anomaly bursts.
+    """
+    success = max(0.0, min(1.0, success_rate_ema))
+    anomaly = max(0.0, min(1.0, anomaly_score))
+    quality = 0.75 * success + 0.25 * (1.0 - anomaly)
+    return max(0.0, min(1.0, quality))
 
 
 class FeedbackCollector:
@@ -178,6 +190,9 @@ class FeedbackCollector:
             metrics.anomaly_score = (
                 self._alpha * anomaly + (1 - self._alpha) * metrics.anomaly_score
             )
+            metrics.quality_score = _compute_quality_score(
+                metrics.success_rate_ema, metrics.anomaly_score
+            )
 
     @staticmethod
     def _detect_anomaly(outcome: CompletionOutcome) -> float:
@@ -212,6 +227,7 @@ class FeedbackCollector:
                 success_rate_ema=metrics.success_rate_ema,
                 token_efficiency_ema=metrics.token_efficiency_ema,
                 anomaly_score=metrics.anomaly_score,
+                quality_score=metrics.quality_score,
                 sample_count=metrics.sample_count,
             )
 
@@ -224,6 +240,7 @@ class FeedbackCollector:
                     success_rate_ema=m.success_rate_ema,
                     token_efficiency_ema=m.token_efficiency_ema,
                     anomaly_score=m.anomaly_score,
+                    quality_score=m.quality_score,
                     sample_count=m.sample_count,
                 )
                 for name, m in self._metrics.items()
