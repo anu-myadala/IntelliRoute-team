@@ -361,6 +361,24 @@ class ProviderQuota(BaseModel):
     refill_rate: float
 
 
+class ResetPayload(BaseModel):
+    clear_configs: bool = True
+    clear_log: bool = True
+
+
+@app.post("/reset")
+async def reset_state(payload: ResetPayload = ResetPayload()) -> dict:
+    global _replication_offset
+    store.reset(clear_configs=payload.clear_configs, clear_log=payload.clear_log)
+    _replication_offset = 0
+    return {
+        "ok": True,
+        "cleared": "rate_limiter",
+        "clear_configs": payload.clear_configs,
+        "clear_log": payload.clear_log,
+    }
+
+
 @app.post("/config/provider")
 async def set_provider_quota(payload: ProviderQuota) -> dict:
     store.set_provider_default(
