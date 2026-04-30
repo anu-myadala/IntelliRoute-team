@@ -201,3 +201,64 @@ def test_all_metrics_returns_snapshot():
     assert len(all_m) == 2
     assert "p1" in all_m
     assert "p2" in all_m
+
+
+def test_quality_score_is_bounded_between_zero_and_one():
+    fc = FeedbackCollector(alpha=1.0)
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=False,
+            hallucination_signal=1.0,
+        )
+    )
+    metrics = fc.get_metrics("p1")
+    assert metrics is not None
+    assert 0.0 <= metrics.quality_score <= 1.0
+
+
+def test_quality_score_drops_when_anomaly_rises():
+    fc = FeedbackCollector(alpha=1.0)
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=True,
+            hallucination_signal=0.0,
+        )
+    )
+    high_quality = fc.get_metrics("p1").quality_score
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=True,
+            hallucination_signal=1.0,
+        )
+    )
+    low_quality = fc.get_metrics("p1").quality_score
+    assert low_quality < high_quality
+
+
+def test_quality_score_rises_with_success_signal():
+    fc = FeedbackCollector(alpha=1.0)
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=False,
+            hallucination_signal=0.0,
+        )
+    )
+    low_quality = fc.get_metrics("p1").quality_score
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=True,
+            hallucination_signal=0.0,
+        )
+    )
+    high_quality = fc.get_metrics("p1").quality_score
+    assert high_quality > low_quality

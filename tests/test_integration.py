@@ -396,6 +396,7 @@ def test_feedback_endpoint_populated_after_completions(stack):
     for provider_name, metrics in feedback.items():
         assert "latency_ema" in metrics
         assert "success_rate_ema" in metrics
+        assert "quality_score" in metrics
         assert "sample_count" in metrics
 
 
