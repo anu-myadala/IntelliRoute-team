@@ -801,6 +801,10 @@
                         <option value="code">Code (Specialized)</option>
                     </select>
                 </div>
+                <div class="intent-selector">
+                    <input type="text" id="teamIdInput" placeholder="team_id (optional)" value="team-alpha" />
+                    <input type="text" id="workflowIdInput" placeholder="workflow_id (optional)" value="nightly-batch" />
+                </div>
 
                 <div class="input-group">
                     <input type="text" id="messageInput" placeholder="Ask me anything..." />
@@ -874,6 +878,7 @@
                 <div class="section-title">💰 Cost Tracker</div>
                 <div class="metric-card">
                     <div class="cost-bars" id="costBars"></div>
+                    <div id="scopeBudgetInfo" style="font-size:11px;color:var(--text-secondary);margin-top:8px;"></div>
                     <div class="cost-total">
                         <div class="cost-total-label">Total Spend</div>
                         <div class="cost-total-value" id="totalCost">$0.00</div>
@@ -955,6 +960,8 @@
             if (!content) return;
 
             const intent = document.getElementById('intentSelect').value;
+            const teamId = document.getElementById('teamIdInput').value.trim();
+            const workflowId = document.getElementById('workflowIdInput').value.trim();
 
             // Add user message
             addMessage('user', content);
@@ -976,6 +983,8 @@
                     },
                     body: JSON.stringify({
                         intent_hint: intent || undefined,
+                        team_id: teamId || undefined,
+                        workflow_id: workflowId || undefined,
                         messages: [{ role: 'user', content }]
                     })
                 });
@@ -1301,6 +1310,45 @@
                     const totalCost = cost.total_cost_usd || Object.values(state.costs).reduce((a, b) => a + b, 0);
                     document.getElementById('totalCost').textContent = '$' + totalCost.toFixed(4);
                 }
+            } catch (e) {}
+
+            // 4b. Team/workflow rollups and budget pressure
+            try {
+                const teamId = document.getElementById('teamIdInput').value.trim();
+                const workflowId = document.getElementById('workflowIdInput').value.trim();
+                const info = [];
+                if (teamId) {
+                    const tr = await fetch(`${COST_API}/summary/team/${encodeURIComponent(teamId)}`);
+                    if (tr.ok) {
+                        const t = await tr.json();
+                        info.push(`team ${teamId}: $${(t.total_cost_usd || 0).toFixed(4)} (${t.total_requests || 0} req)`);
+                    }
+                    const tb = await fetch(`${COST_API}/budget/team/${encodeURIComponent(teamId)}`);
+                    if (tb.ok) {
+                        const b = await tb.json();
+                        if (b.budget_usd != null) {
+                            const util = b.utilization != null ? (b.utilization * 100).toFixed(1) + '%' : 'n/a';
+                            info.push(`team budget: $${Number(b.budget_usd).toFixed(2)} util=${util} premium_cap_hit=${b.premium_cap_hit ? 'yes' : 'no'}`);
+                        }
+                    }
+                }
+                if (workflowId) {
+                    const wr = await fetch(`${COST_API}/summary/workflow/${encodeURIComponent(workflowId)}`);
+                    if (wr.ok) {
+                        const w = await wr.json();
+                        info.push(`workflow ${workflowId}: $${(w.total_cost_usd || 0).toFixed(4)} (${w.total_requests || 0} req)`);
+                    }
+                    const wb = await fetch(`${COST_API}/budget/workflow/${encodeURIComponent(workflowId)}`);
+                    if (wb.ok) {
+                        const b = await wb.json();
+                        if (b.budget_usd != null) {
+                            const util = b.utilization != null ? (b.utilization * 100).toFixed(1) + '%' : 'n/a';
+                            info.push(`workflow budget: $${Number(b.budget_usd).toFixed(2)} util=${util} pressure=${b.budget_pressure ? 'yes' : 'no'}`);
+                        }
+                    }
+                }
+                const scopeInfo = document.getElementById('scopeBudgetInfo');
+                scopeInfo.textContent = info.join(' | ');
             } catch (e) {}
 
             // 5. Fetch leader election status from all replicas
