@@ -906,6 +906,7 @@ async def get_feedback() -> dict:
             "success_rate_ema": round(m.success_rate_ema, 4),
             "token_efficiency_ema": round(m.token_efficiency_ema, 4),
             "anomaly_score": round(m.anomaly_score, 4),
+            "quality_score": round(m.quality_score, 4),
             "sample_count": m.sample_count,
         }
         for name, m in metrics.items()

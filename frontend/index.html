@@ -1127,6 +1127,10 @@
                         <span>Anomaly:</span>
                         <span class="metric-value" id="anomaly-${p}">0.0</span>
                     </div>
+                    <div class="health-metric">
+                        <span>Quality:</span>
+                        <span class="metric-value" id="quality-${p}">0.00</span>
+                    </div>
                 </div>
             `).join('');
         }
@@ -1269,6 +1273,8 @@
                             document.getElementById(`latency-${p}`).textContent = Math.round(m.latency_ema) + 'ms';
                             document.getElementById(`success-${p}`).textContent = Math.round(m.success_rate_ema * 100) + '%';
                             document.getElementById(`anomaly-${p}`).textContent = m.anomaly_score.toFixed(2);
+                            const q = (typeof m.quality_score === 'number') ? m.quality_score : 1.0;
+                            document.getElementById(`quality-${p}`).textContent = q.toFixed(2);
                         }
                     });
                 }
