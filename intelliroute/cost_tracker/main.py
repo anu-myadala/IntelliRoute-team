@@ -38,6 +38,8 @@ async def record(event: CostEvent) -> dict:
         log,
         "cost_event_recorded",
         tenant=event.tenant_id,
+        team=event.team_id,
+        workflow=event.workflow_id,
         provider=event.provider,
         cost=event.estimated_cost_usd,
     )
@@ -54,6 +56,21 @@ class Budget(BaseModel):
     budget_usd: float
 
 
+class TeamBudget(BaseModel):
+    team_id: str
+    budget_usd: float
+
+
+class WorkflowBudget(BaseModel):
+    workflow_id: str
+    budget_usd: float
+
+
+class TeamPremiumCap(BaseModel):
+    team_id: str
+    premium_cap_usd: float
+
+
 @app.post("/budget")
 async def set_budget(b: Budget) -> dict:
     accountant.set_budget(b.tenant_id, b.budget_usd)
@@ -64,6 +81,64 @@ async def set_budget(b: Budget) -> dict:
 async def get_budget(tenant_id: str) -> dict:
     budget = accountant.get_budget(tenant_id)
     return {"tenant_id": tenant_id, "budget_usd": budget}
+
+
+@app.post("/budget/team")
+async def set_team_budget(b: TeamBudget) -> dict:
+    accountant.set_team_budget(b.team_id, b.budget_usd)
+    return {"team_id": b.team_id, "budget_usd": b.budget_usd}
+
+
+@app.post("/budget/workflow")
+async def set_workflow_budget(b: WorkflowBudget) -> dict:
+    accountant.set_workflow_budget(b.workflow_id, b.budget_usd)
+    return {"workflow_id": b.workflow_id, "budget_usd": b.budget_usd}
+
+
+@app.post("/budget/team/premium-cap")
+async def set_team_premium_cap(c: TeamPremiumCap) -> dict:
+    accountant.set_team_premium_cap(c.team_id, c.premium_cap_usd)
+    return {"team_id": c.team_id, "premium_cap_usd": c.premium_cap_usd}
+
+
+@app.get("/budget/team/{team_id}")
+async def get_team_budget(team_id: str) -> dict:
+    return accountant.team_budget_status(team_id)
+
+
+@app.get("/budget/workflow/{workflow_id}")
+async def get_workflow_budget(workflow_id: str) -> dict:
+    return accountant.workflow_budget_status(workflow_id)
+
+
+@app.get("/budgets/teams")
+async def list_team_budgets() -> dict:
+    return {"budgets": accountant.team_budgets()}
+
+
+@app.get("/budgets/workflows")
+async def list_workflow_budgets() -> dict:
+    return {"budgets": accountant.workflow_budgets()}
+
+
+@app.get("/costs/teams")
+async def team_costs() -> dict:
+    return {"teams": accountant.team_summaries()}
+
+
+@app.get("/costs/workflows")
+async def workflow_costs() -> dict:
+    return {"workflows": accountant.workflow_summaries()}
+
+
+@app.get("/summary/team/{team_id}")
+async def team_summary(team_id: str) -> dict:
+    return accountant.team_summary(team_id)
+
+
+@app.get("/summary/workflow/{workflow_id}")
+async def workflow_summary(workflow_id: str) -> dict:
+    return accountant.workflow_summary(workflow_id)
 
 
 @app.get("/alerts")

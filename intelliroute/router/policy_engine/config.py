@@ -41,6 +41,9 @@ class PolicyEngineConfig:
     premium_provider_names: frozenset[str]
     complexity_threshold_premium: float
     budget_utilization_downgrade: float
+    team_budget_utilization_downgrade: float
+    workflow_budget_utilization_downgrade: float
+    team_premium_cap_utilization: float
     interactive_max_latency_ms: int
     apply_interactive_latency_gate: bool
 
@@ -57,6 +60,15 @@ class PolicyEngineConfig:
             ),
             budget_utilization_downgrade=_env_float(
                 "INTELLIROUTE_POLICY_BUDGET_UTIL_DOWNGRADE", 0.85
+            ),
+            team_budget_utilization_downgrade=_env_float(
+                "INTELLIROUTE_POLICY_TEAM_BUDGET_UTIL_DOWNGRADE", 0.85
+            ),
+            workflow_budget_utilization_downgrade=_env_float(
+                "INTELLIROUTE_POLICY_WORKFLOW_BUDGET_UTIL_DOWNGRADE", 0.85
+            ),
+            team_premium_cap_utilization=_env_float(
+                "INTELLIROUTE_POLICY_TEAM_PREMIUM_CAP_UTIL", 1.0
             ),
             interactive_max_latency_ms=_env_int(
                 "INTELLIROUTE_POLICY_INTERACTIVE_MAX_LATENCY_MS", 650

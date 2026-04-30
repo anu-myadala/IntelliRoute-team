@@ -219,6 +219,17 @@ def _batch_request() -> dict:
     }
 
 
+def _workflow_batch_request() -> dict:
+    return {
+        "tenant_id": "ignored-by-gateway",
+        "team_id": "team-alpha",
+        "workflow_id": "nightly-batch",
+        "messages": [{"role": "user", "content": "Summarize the following document into bullet points"}],
+        "max_tokens": 50,
+        "intent_hint": "batch",
+    }
+
+
 def test_interactive_prompt_routes_to_fast(stack):
     r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_interactive_request(), headers=_headers(), timeout=10.0)
     assert r.status_code == 200, r.text
@@ -315,6 +326,45 @@ def test_cost_tracker_reflects_tenant_spend(stack):
     assert summary["total_requests"] >= 1
     assert summary["total_cost_usd"] > 0.0
     assert len(summary["by_provider"]) >= 1
+
+
+def test_team_workflow_rollups_and_budget_endpoints(stack):
+    r = httpx.post(
+        f"{stack.gateway_url}/v1/complete",
+        json=_workflow_batch_request(),
+        headers=_headers(),
+        timeout=10.0,
+    )
+    assert r.status_code == 200, r.text
+    team_summary = httpx.get(
+        f"{stack.cost_tracker_url}/summary/team/team-alpha", timeout=5.0
+    ).json()
+    workflow_summary = httpx.get(
+        f"{stack.cost_tracker_url}/summary/workflow/nightly-batch", timeout=5.0
+    ).json()
+    assert team_summary["total_requests"] >= 1
+    assert workflow_summary["total_requests"] >= 1
+
+    rb = httpx.post(
+        f"{stack.cost_tracker_url}/budget/team",
+        json={"team_id": "team-alpha", "budget_usd": 1.0},
+        timeout=5.0,
+    )
+    assert rb.status_code == 200
+    wb = httpx.post(
+        f"{stack.cost_tracker_url}/budget/workflow",
+        json={"workflow_id": "nightly-batch", "budget_usd": 1.0},
+        timeout=5.0,
+    )
+    assert wb.status_code == 200
+    tb = httpx.get(
+        f"{stack.cost_tracker_url}/budget/team/team-alpha", timeout=5.0
+    ).json()
+    wfb = httpx.get(
+        f"{stack.cost_tracker_url}/budget/workflow/nightly-batch", timeout=5.0
+    ).json()
+    assert tb["team_id"] == "team-alpha"
+    assert wfb["workflow_id"] == "nightly-batch"
 
 
 def test_unauthenticated_request_is_rejected(stack):

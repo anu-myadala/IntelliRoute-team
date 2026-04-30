@@ -51,6 +51,9 @@ def test_batch_blocks_premium():
         premium_provider_names=frozenset({"mock-smart"}),
         complexity_threshold_premium=0.5,
         budget_utilization_downgrade=0.85,
+        team_budget_utilization_downgrade=0.85,
+        workflow_budget_utilization_downgrade=0.85,
+        team_premium_cap_utilization=1.0,
         interactive_max_latency_ms=350,
         apply_interactive_latency_gate=True,
     )
@@ -67,6 +70,9 @@ def test_interactive_simple_blocks_premium_and_slow():
         premium_provider_names=frozenset({"mock-smart"}),
         complexity_threshold_premium=0.5,
         budget_utilization_downgrade=0.85,
+        team_budget_utilization_downgrade=0.85,
+        workflow_budget_utilization_downgrade=0.85,
+        team_premium_cap_utilization=1.0,
         interactive_max_latency_ms=650,
         apply_interactive_latency_gate=True,
     )
@@ -84,6 +90,9 @@ def test_budget_pressure_blocks_premium():
         premium_provider_names=frozenset({"mock-smart"}),
         complexity_threshold_premium=0.1,
         budget_utilization_downgrade=0.5,
+        team_budget_utilization_downgrade=0.5,
+        workflow_budget_utilization_downgrade=0.5,
+        team_premium_cap_utilization=1.0,
         interactive_max_latency_ms=350,
         apply_interactive_latency_gate=False,
     )
@@ -107,6 +116,9 @@ def test_disabled_passes_through_all_providers():
         premium_provider_names=frozenset({"mock-smart"}),
         complexity_threshold_premium=0.99,
         budget_utilization_downgrade=0.1,
+        team_budget_utilization_downgrade=0.1,
+        workflow_budget_utilization_downgrade=0.1,
+        team_premium_cap_utilization=1.0,
         interactive_max_latency_ms=1,
         apply_interactive_latency_gate=True,
     )
@@ -123,6 +135,9 @@ def test_fail_open_when_all_blocked(monkeypatch):
         premium_provider_names=frozenset({"mock-fast", "mock-smart", "mock-cheap"}),
         complexity_threshold_premium=0.99,
         budget_utilization_downgrade=0.85,
+        team_budget_utilization_downgrade=0.85,
+        workflow_budget_utilization_downgrade=0.85,
+        team_premium_cap_utilization=1.0,
         interactive_max_latency_ms=350,
         apply_interactive_latency_gate=True,
     )
@@ -140,6 +155,9 @@ def test_brownout_blocks_premium_for_reasoning() -> None:
         premium_provider_names=frozenset({"mock-smart"}),
         complexity_threshold_premium=0.1,
         budget_utilization_downgrade=0.95,
+        team_budget_utilization_downgrade=0.95,
+        workflow_budget_utilization_downgrade=0.95,
+        team_premium_cap_utilization=1.0,
         interactive_max_latency_ms=650,
         apply_interactive_latency_gate=True,
     )
@@ -159,3 +177,60 @@ def test_brownout_blocks_premium_for_reasoning() -> None:
     names = {p.name for p in out}
     assert "mock-smart" not in names
     assert "brownout_degrade_low_priority_routing" in pe.matched_rules
+
+
+def test_team_budget_pressure_blocks_premium():
+    cfg = PolicyEngineConfig(
+        enabled=True,
+        premium_provider_names=frozenset({"mock-smart"}),
+        complexity_threshold_premium=0.99,
+        budget_utilization_downgrade=0.95,
+        team_budget_utilization_downgrade=0.8,
+        workflow_budget_utilization_downgrade=0.95,
+        team_premium_cap_utilization=1.0,
+        interactive_max_latency_ms=9999,
+        apply_interactive_latency_gate=False,
+    )
+    ev = PolicyEvaluator(cfg)
+    req = _req("simple")
+    out, pe = ev.evaluate(
+        _providers(),
+        Intent.INTERACTIVE,
+        req,
+        tenant_budget_usd=None,
+        tenant_spent_usd=0.0,
+        team_id="team-a",
+        team_budget_usd=1.0,
+        team_spent_usd=0.9,
+    )
+    assert "mock-smart" not in {p.name for p in out}
+    assert "team_budget_pressure_blocks_premium" in pe.matched_rules
+
+
+def test_workflow_budget_pressure_blocks_expensive_batch():
+    cfg = PolicyEngineConfig(
+        enabled=True,
+        premium_provider_names=frozenset({"mock-smart"}),
+        complexity_threshold_premium=0.99,
+        budget_utilization_downgrade=0.95,
+        team_budget_utilization_downgrade=0.95,
+        workflow_budget_utilization_downgrade=0.8,
+        team_premium_cap_utilization=1.0,
+        interactive_max_latency_ms=9999,
+        apply_interactive_latency_gate=False,
+    )
+    ev = PolicyEvaluator(cfg)
+    req = _req("batch summarize")
+    out, pe = ev.evaluate(
+        _providers(),
+        Intent.BATCH,
+        req,
+        tenant_budget_usd=None,
+        tenant_spent_usd=0.0,
+        workflow_id="wf-1",
+        workflow_budget_usd=1.0,
+        workflow_spent_usd=0.9,
+    )
+    names = {p.name for p in out}
+    assert "mock-smart" not in names
+    assert "workflow_budget_pressure_cost_optimize" in pe.matched_rules
