@@ -46,6 +46,12 @@ async def health() -> dict:
     return {"status": "healthy"}
 
 
+@app.post("/reset")
+async def reset_state() -> dict:
+    breakers.clear()
+    return {"ok": True, "cleared": "health_monitor_breakers"}
+
+
 @app.post("/register")
 async def register(name: str, url: str) -> dict:
     provider_urls[name] = url

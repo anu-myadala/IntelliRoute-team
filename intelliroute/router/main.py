@@ -43,7 +43,7 @@ from ..common.models import (
 from .feedback import CompletionOutcome, FeedbackCollector, compute_hallucination_signal
 from .brownout import BrownoutManager
 from .intent import classify
-from .policy import RoutingPolicy
+from .policy import RoutingPolicy, ScoredProvider
 from .policy_engine import PolicyEvaluator
 from .provider_clients import ProviderCallError, call_provider
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
@@ -73,6 +73,24 @@ _http: Optional[httpx.AsyncClient] = None
 _WORKER_COUNT = 4
 _worker_tasks: list[asyncio.Task] = []
 _discovery_task: Optional[asyncio.Task] = None
+_routing_mode = os.environ.get("INTELLIROUTE_ROUTING_MODE", "intelliroute").strip().lower()
+_rr_cursor = 0
+
+
+def _get_routing_mode() -> str:
+    mode = (_routing_mode or "intelliroute").strip().lower()
+    if mode in {"intelliroute", "round_robin", "cheapest_first", "latency_first", "premium_first"}:
+        return mode
+    return "intelliroute"
+
+
+def _set_routing_mode(mode: str) -> str:
+    global _routing_mode
+    candidate = (mode or "intelliroute").strip().lower()
+    if candidate not in {"intelliroute", "round_robin", "cheapest_first", "latency_first", "premium_first"}:
+        raise ValueError(f"unsupported routing mode: {mode}")
+    _routing_mode = candidate
+    return _routing_mode
 
 
 @app.on_event("startup")
@@ -609,13 +627,8 @@ async def _execute_completion(
             intent=intent.value,
         )
 
-    ranked = policy.rank(
-        candidates,
-        health=health,
-        intent=intent,
-        latency_budget_ms=effective_req.latency_budget_ms,
-        confidence_hint=effective_req.confidence_hint,
-    )
+    routing_mode = _get_routing_mode()
+    ranked = _rank_candidates(routing_mode, candidates, health, intent, effective_req)
     if not ranked:
         _record_brownout_result(
             effective_req.tenant_id,
@@ -629,6 +642,7 @@ async def _execute_completion(
         "route_decided",
         request_id=request_id,
         intent=intent.value,
+        routing_mode=routing_mode,
         primary=ranked[0].provider.name,
         policy_matched_rules=list(pe.matched_rules) if pe else [],
         policy_blocked=list(pe.blocked_providers) if pe else [],
@@ -860,12 +874,74 @@ async def _call_provider(
         return False, (time.monotonic() - start) * 1000, None, "unknown", 0, None, False
 
 
+def _rank_candidates(
+    mode: str,
+    candidates: list[ProviderInfo],
+    health: dict[str, ProviderHealth],
+    intent: Intent,
+    req: CompletionRequest,
+ ) -> list[ScoredProvider]:
+    global _rr_cursor
+
+    def _naive_scored(items: list[ProviderInfo]) -> list[ScoredProvider]:
+        n = max(1, len(items))
+        return [
+            ScoredProvider(
+                provider=p,
+                score=round(1.0 - (i / n), 6),
+                sub_scores={"latency": 0.0, "cost": 0.0, "capability": 0.0, "success": 0.0},
+            )
+            for i, p in enumerate(items)
+        ]
+
+    if mode == "round_robin":
+        if not candidates:
+            return []
+        ordered = sorted(candidates, key=lambda p: p.name)
+        start = _rr_cursor % len(ordered)
+        _rr_cursor += 1
+        rotated = ordered[start:] + ordered[:start]
+        return _naive_scored(rotated)
+    if mode == "cheapest_first":
+        ordered = sorted(candidates, key=lambda p: (p.cost_per_1k_tokens, p.name))
+        return _naive_scored(ordered)
+    if mode == "latency_first":
+        ordered = sorted(candidates, key=lambda p: (p.typical_latency_ms, p.name))
+        return _naive_scored(ordered)
+    if mode == "premium_first":
+        ordered = sorted(
+            candidates,
+            key=lambda p: (-p.capability_tier, p.typical_latency_ms, p.cost_per_1k_tokens, p.name),
+        )
+        return _naive_scored(ordered)
+    return policy.rank(
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=req.latency_budget_ms,
+        confidence_hint=req.confidence_hint,
+    )
+
+
 class RouteDecision(BaseModel):
     intent: str
     ranked: list[str]
     scores: dict[str, float]
+    routing_mode: str = "intelliroute"
     policy_evaluation: Optional[PolicyEvaluationResult] = None
     brownout_status: Optional[BrownoutStatus] = None
+
+
+class RoutingModeBody(BaseModel):
+    mode: str
+
+
+class ResetPayload(BaseModel):
+    reset_feedback: bool = True
+    reset_brownout: bool = True
+    reset_queue: bool = True
+    reset_tuner: bool = True
+    reset_routing_mode: bool = True
 
 
 @app.get("/weights")
@@ -883,6 +959,48 @@ async def get_weights() -> dict:
             "tuner_net_credit": {k: round(v, 4) for k, v in snap.net_credit.items()},
         }
     return out
+
+
+@app.post("/reset")
+async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
+    global _rr_cursor
+    if body.reset_feedback:
+        feedback.reset()
+    if body.reset_brownout:
+        brownout_manager.reset()
+        for mgr in _tenant_brownout.values():
+            mgr.reset()
+        _tenant_brownout.clear()
+    if body.reset_queue:
+        request_queue.reset()
+    if body.reset_tuner:
+        weight_tuner.reset(reset_policy_weights=True)
+    if body.reset_routing_mode:
+        _set_routing_mode("intelliroute")
+    _rr_cursor = 0
+    return {
+        "ok": True,
+        "cleared": "router_runtime_state",
+        "reset_feedback": body.reset_feedback,
+        "reset_brownout": body.reset_brownout,
+        "reset_queue": body.reset_queue,
+        "reset_tuner": body.reset_tuner,
+        "reset_routing_mode": body.reset_routing_mode,
+    }
+
+
+@app.get("/routing/mode")
+async def routing_mode_status() -> dict:
+    return {"mode": _get_routing_mode()}
+
+
+@app.post("/routing/mode")
+async def set_routing_mode(body: RoutingModeBody) -> dict:
+    try:
+        mode = _set_routing_mode(body.mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"mode": mode}
 
 
 @app.post("/weights/rebalance/{intent}")
@@ -968,17 +1086,13 @@ async def brownout_status_for_tenant(tenant_id: str) -> BrownoutStatus:
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
     intent, health, candidates, pe, bs, _budget_ctx = await _prepare_routing(req)
-    ranked = policy.rank(
-        candidates,
-        health=health,
-        intent=intent,
-        latency_budget_ms=req.latency_budget_ms,
-        confidence_hint=req.confidence_hint,
-    )
+    routing_mode = _get_routing_mode()
+    ranked = _rank_candidates(routing_mode, candidates, health, intent, req)
     return RouteDecision(
         intent=intent.value,
         ranked=[s.provider.name for s in ranked],
         scores={s.provider.name: round(s.score, 4) for s in ranked},
+        routing_mode=routing_mode,
         policy_evaluation=pe,
         brownout_status=BrownoutStatus(
             is_degraded=bs.is_degraded,

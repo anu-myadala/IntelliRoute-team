@@ -188,3 +188,11 @@ class RequestQueue:
                 shed_count=self._shed_count,
                 timeout_count=self._timeout_count,
             )
+
+    def reset(self) -> None:
+        with self._lock:
+            for priority in self._queues:
+                self._queues[priority].clear()
+            self._shed_count = 0
+            self._timeout_count = 0
+            self._event.clear()
