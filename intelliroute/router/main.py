@@ -346,26 +346,76 @@ async def _publish_cost(event: CostEvent) -> None:
         pass
 
 
-async def _fetch_tenant_budget_context(tenant_id: str) -> tuple[float | None, float]:
-    """Return (budget_usd or None, spent_usd). Fail-open on errors."""
+async def _fetch_budget_context(req: CompletionRequest) -> dict:
+    """Return tenant/team/workflow budget context. Fail-open on errors."""
     assert _http is not None
-    spent = 0.0
+    tenant_spent = 0.0
     try:
-        r = await _http.get(f"{settings.cost_tracker_url}/summary/{tenant_id}")
+        r = await _http.get(f"{settings.cost_tracker_url}/summary/{req.tenant_id}")
         if r.status_code == 200:
-            spent = float(r.json().get("total_cost_usd", 0.0))
+            tenant_spent = float(r.json().get("total_cost_usd", 0.0))
     except Exception:
         pass
-    budget: float | None = None
+    tenant_budget: float | None = None
     try:
-        r = await _http.get(f"{settings.cost_tracker_url}/budget/{tenant_id}")
+        r = await _http.get(f"{settings.cost_tracker_url}/budget/{req.tenant_id}")
         if r.status_code == 200:
             raw = r.json().get("budget_usd")
             if raw is not None:
-                budget = float(raw)
+                tenant_budget = float(raw)
     except Exception:
         pass
-    return budget, spent
+    team_spent = 0.0
+    team_budget = None
+    team_premium_spend = 0.0
+    team_premium_cap = None
+    if req.team_id:
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/summary/team/{req.team_id}")
+            if r.status_code == 200:
+                team_spent = float(r.json().get("total_cost_usd", 0.0))
+        except Exception:
+            pass
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/budget/team/{req.team_id}")
+            if r.status_code == 200:
+                body = r.json()
+                team_budget = body.get("budget_usd")
+                if team_budget is not None:
+                    team_budget = float(team_budget)
+                team_premium_spend = float(body.get("premium_spend_usd", 0.0))
+                cap = body.get("premium_cap_usd")
+                if cap is not None:
+                    team_premium_cap = float(cap)
+        except Exception:
+            pass
+    workflow_spent = 0.0
+    workflow_budget = None
+    if req.workflow_id:
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/summary/workflow/{req.workflow_id}")
+            if r.status_code == 200:
+                workflow_spent = float(r.json().get("total_cost_usd", 0.0))
+        except Exception:
+            pass
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/budget/workflow/{req.workflow_id}")
+            if r.status_code == 200:
+                b = r.json().get("budget_usd")
+                if b is not None:
+                    workflow_budget = float(b)
+        except Exception:
+            pass
+    return {
+        "tenant_budget_usd": tenant_budget,
+        "tenant_spent_usd": tenant_spent,
+        "team_budget_usd": team_budget,
+        "team_spent_usd": team_spent,
+        "workflow_budget_usd": workflow_budget,
+        "workflow_spent_usd": workflow_spent,
+        "team_premium_cap_usd": team_premium_cap,
+        "team_premium_spend_usd": team_premium_spend,
+    }
 
 
 def _tenant_key(tenant_id: str) -> str:
@@ -400,8 +450,7 @@ async def _prepare_routing(
     list[ProviderInfo],
     PolicyEvaluationResult | None,
     BrownoutStatus,
-    float | None,
-    float,
+    dict,
 ]:
     intent = classify(req)
     health = await _fetch_health_snapshot()
@@ -445,21 +494,29 @@ async def _prepare_routing(
         error_rate=effective_bs.error_rate,
         timeout_rate=effective_bs.timeout_rate,
     )
-    tenant_budget, tenant_spent = await _fetch_tenant_budget_context(req.tenant_id)
+    budget_ctx = await _fetch_budget_context(req)
     candidates, policy_result = policy_evaluator.evaluate(
         all_providers,
         intent,
         req,
-        tenant_budget_usd=tenant_budget,
-        tenant_spent_usd=tenant_spent,
+        tenant_budget_usd=budget_ctx["tenant_budget_usd"],
+        tenant_spent_usd=budget_ctx["tenant_spent_usd"],
+        team_id=req.team_id,
+        workflow_id=req.workflow_id,
+        team_budget_usd=budget_ctx["team_budget_usd"],
+        team_spent_usd=budget_ctx["team_spent_usd"],
+        workflow_budget_usd=budget_ctx["workflow_budget_usd"],
+        workflow_spent_usd=budget_ctx["workflow_spent_usd"],
+        team_premium_cap_usd=budget_ctx["team_premium_cap_usd"],
+        team_premium_spend_usd=budget_ctx["team_premium_spend_usd"],
         brownout_status=bs_model,
         brownout_max_latency_ms=brownout_manager.config.low_latency_max_ms,
         brownout_block_premium=brownout_manager.config.block_premium_for_medium_and_low,
         brownout_prefer_low_latency=brownout_manager.config.prefer_low_latency_for_medium_and_low,
     )
     if not policy_evaluator._config.enabled:
-        return intent, health, list(all_providers), None, bs_model, tenant_budget, tenant_spent
-    return intent, health, candidates, policy_result, bs_model, tenant_budget, tenant_spent
+        return intent, health, list(all_providers), None, bs_model, budget_ctx
+    return intent, health, candidates, policy_result, bs_model, budget_ctx
 
 
 async def _queue_worker(worker_id: int) -> None:
@@ -503,7 +560,7 @@ async def _execute_completion(
 ) -> CompletionResponse:
     """Core completion logic: ranking, provider tries, and feedback recording."""
     started = time.monotonic()
-    intent, health, candidates, pe, bs, tenant_budget, tenant_spent = await _prepare_routing(req)
+    intent, health, candidates, pe, bs, budget_ctx = await _prepare_routing(req)
     effective_req = req
     if (
         bs.is_degraded
@@ -565,15 +622,26 @@ async def _execute_completion(
         # tenant past its budget, demote to the cheapest still-pending option.
         # This implements the spec's "fallback if marginal gain < cost delta"
         # rule without requiring the policy_engine to know about live spend.
-        if tenant_budget is not None and len(pending) >= 1:
+        tenant_budget = budget_ctx.get("tenant_budget_usd")
+        tenant_spent = budget_ctx.get("tenant_spent_usd", 0.0)
+        team_budget = budget_ctx.get("team_budget_usd")
+        team_spent = budget_ctx.get("team_spent_usd", 0.0)
+        workflow_budget = budget_ctx.get("workflow_budget_usd")
+        workflow_spent = budget_ctx.get("workflow_spent_usd", 0.0)
+        if (tenant_budget is not None or team_budget is not None or workflow_budget is not None) and len(pending) >= 1:
             head = pending[0]
             projected = (effective_req.max_tokens / 1000.0) * head.provider.cost_per_1k_tokens
-            if tenant_spent + projected > tenant_budget:
+            tenant_exceed = tenant_budget is not None and (tenant_spent + projected > tenant_budget)
+            team_exceed = team_budget is not None and (team_spent + projected > team_budget)
+            workflow_exceed = workflow_budget is not None and (workflow_spent + projected > workflow_budget)
+            if tenant_exceed or team_exceed or workflow_exceed:
                 cheaper = min(pending, key=lambda s: s.provider.cost_per_1k_tokens)
                 if cheaper is not head:
+                    scope = "tenant" if tenant_exceed else ("team" if team_exceed else "workflow")
                     log_event(
                         log,
                         "budget_gate_demoted",
+                        scope=scope,
                         from_provider=head.provider.name,
                         to_provider=cheaper.provider.name,
                         projected_cost=round(projected, 6),
@@ -642,6 +710,8 @@ async def _execute_completion(
                 CostEvent(
                     request_id=request_id,
                     tenant_id=effective_req.tenant_id,
+                    team_id=effective_req.team_id,
+                    workflow_id=effective_req.workflow_id,
                     provider=info.name,
                     model=info.model,
                     prompt_tokens=prompt_tokens,
@@ -803,7 +873,7 @@ async def brownout_status_for_tenant(tenant_id: str) -> BrownoutStatus:
 @app.post("/decide", response_model=RouteDecision)
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
-    intent, health, candidates, pe, bs, _budget, _spent = await _prepare_routing(req)
+    intent, health, candidates, pe, bs, _budget_ctx = await _prepare_routing(req)
     ranked = policy.rank(
         candidates,
         health=health,

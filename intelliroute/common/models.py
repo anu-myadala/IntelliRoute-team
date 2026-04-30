@@ -36,6 +36,14 @@ class CompletionRequest(BaseModel):
         default="",
         description="Tenant/team id. Clients may omit this; the gateway overrides it from the authenticated API key.",
     )
+    team_id: Optional[str] = Field(
+        default=None,
+        description="Optional team scope for budget/cost governance.",
+    )
+    workflow_id: Optional[str] = Field(
+        default=None,
+        description="Optional workflow scope for budget/cost governance.",
+    )
     messages: list[ChatMessage]
     max_tokens: int = 256
     temperature: float = 0.7
@@ -59,6 +67,7 @@ class PolicyEvaluationResult(BaseModel):
     allowed_providers: list[str] = Field(default_factory=list)
     blocked_providers: list[str] = Field(default_factory=list)
     matched_rules: list[str] = Field(default_factory=list)
+    budget_actions: list[dict[str, str]] = Field(default_factory=list)
     downgrade_reason: Optional[str] = None
     fail_open: bool = False
 
@@ -173,6 +182,8 @@ class RateLimitResult(BaseModel):
 class CostEvent(BaseModel):
     request_id: str
     tenant_id: str
+    team_id: Optional[str] = None
+    workflow_id: Optional[str] = None
     provider: str
     model: str
     prompt_tokens: int

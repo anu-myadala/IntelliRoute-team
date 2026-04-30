@@ -89,3 +89,41 @@ def test_would_exceed_after_budget_already_breached():
     acc.record(_event("t1", "fast", cost=1.5))
     # Headroom is negative; any positive projected cost would still exceed.
     assert acc.would_exceed("t1", projected_cost_usd=0.001) is True
+
+
+def test_team_and_workflow_rollups_are_recorded():
+    acc = CostAccountant()
+    e = _event("t1", "mock-fast", cost=0.02, tokens=120)
+    e.team_id = "team-a"
+    e.workflow_id = "wf-nightly"
+    acc.record(e)
+    team = acc.team_summary("team-a")
+    workflow = acc.workflow_summary("wf-nightly")
+    assert team["total_requests"] == 1
+    assert workflow["total_requests"] == 1
+    assert team["total_tokens"] == 120
+    assert workflow["total_cost_usd"] == 0.02
+
+
+def test_team_budget_and_premium_cap_status():
+    acc = CostAccountant()
+    acc.set_team_budget("team-a", 1.0)
+    acc.set_team_premium_cap("team-a", 0.05)
+    e = _event("t1", "mock-smart", cost=0.06, tokens=100)
+    e.team_id = "team-a"
+    acc.record(e)
+    status = acc.team_budget_status("team-a")
+    assert status["team_id"] == "team-a"
+    assert status["budget_usd"] == 1.0
+    assert status["premium_cap_hit"] is True
+
+
+def test_workflow_budget_status_reports_pressure():
+    acc = CostAccountant()
+    acc.set_workflow_budget("wf-1", 0.1)
+    e = _event("t1", "mock-cheap", cost=0.09, tokens=100)
+    e.workflow_id = "wf-1"
+    acc.record(e)
+    status = acc.workflow_budget_status("wf-1")
+    assert status["workflow_id"] == "wf-1"
+    assert status["budget_pressure"] is True

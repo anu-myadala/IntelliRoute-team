@@ -24,6 +24,8 @@ class PolicyEvaluator:
             self._rule_batch_avoids_premium,
             self._rule_premium_requires_reasoning_or_complexity,
             self._rule_budget_downgrades_premium,
+            self._rule_team_budget_controls,
+            self._rule_workflow_budget_controls,
             self._rule_brownout_degradation,
             self._rule_interactive_latency_gate,
         )
@@ -36,6 +38,14 @@ class PolicyEvaluator:
         *,
         tenant_budget_usd: float | None,
         tenant_spent_usd: float,
+        team_id: str | None = None,
+        workflow_id: str | None = None,
+        team_budget_usd: float | None = None,
+        team_spent_usd: float = 0.0,
+        workflow_budget_usd: float | None = None,
+        workflow_spent_usd: float = 0.0,
+        team_premium_cap_usd: float | None = None,
+        team_premium_spend_usd: float = 0.0,
         brownout_status: BrownoutStatus | None = None,
         brownout_max_latency_ms: int | None = None,
         brownout_block_premium: bool = True,
@@ -56,6 +66,7 @@ class PolicyEvaluator:
         complexity = compute_complexity(request)
         blocked: set[str] = set()
         matched: list[str] = []
+        budget_actions: list[dict[str, str]] = []
         downgrade_reason: str | None = None
 
         ctx = _RuleContext(
@@ -65,12 +76,21 @@ class PolicyEvaluator:
             complexity=complexity,
             tenant_budget_usd=tenant_budget_usd,
             tenant_spent_usd=tenant_spent_usd,
+            team_id=team_id,
+            workflow_id=workflow_id,
+            team_budget_usd=team_budget_usd,
+            team_spent_usd=team_spent_usd,
+            workflow_budget_usd=workflow_budget_usd,
+            workflow_spent_usd=workflow_spent_usd,
+            team_premium_cap_usd=team_premium_cap_usd,
+            team_premium_spend_usd=team_premium_spend_usd,
             brownout_status=brownout_status,
             brownout_max_latency_ms=brownout_max_latency_ms,
             brownout_block_premium=brownout_block_premium,
             brownout_prefer_low_latency=brownout_prefer_low_latency,
             blocked=blocked,
             matched=matched,
+            budget_actions=budget_actions,
             downgrade_reason_holder=[downgrade_reason],
             config=self._config,
         )
@@ -93,6 +113,7 @@ class PolicyEvaluator:
             allowed_providers=[p.name for p in allowed],
             blocked_providers=sorted(blocked),
             matched_rules=matched,
+            budget_actions=budget_actions,
             downgrade_reason=downgrade_reason,
             fail_open=fail_open,
         )
@@ -143,6 +164,89 @@ class PolicyEvaluator:
             ctx.downgrade_reason_holder[0] = (
                 f"budget_utilization {util:.2f} >= "
                 f"{self._config.budget_utilization_downgrade:.2f}"
+            )
+            ctx.budget_actions.append(
+                {
+                    "scope": "tenant",
+                    "action": "restrict_premium",
+                    "reason": "budget_pressure",
+                    "status": f"{util:.2f}",
+                }
+            )
+
+    def _rule_team_budget_controls(self, ctx: "_RuleContext") -> None:
+        if not ctx.team_id:
+            return
+        touched = False
+        budget = ctx.team_budget_usd
+        if budget is not None and budget > 0:
+            util = ctx.team_spent_usd / budget
+            if util >= ctx.config.team_budget_utilization_downgrade:
+                for p in ctx.providers:
+                    if self._is_premium(p):
+                        ctx.blocked.add(p.name)
+                        touched = True
+                if touched:
+                    ctx.matched.append("team_budget_pressure_blocks_premium")
+                    ctx.budget_actions.append(
+                        {
+                            "scope": "team",
+                            "action": "restrict_premium",
+                            "reason": "budget_pressure",
+                            "status": f"{util:.2f}",
+                        }
+                    )
+                    if ctx.downgrade_reason_holder[0] is None:
+                        ctx.downgrade_reason_holder[0] = (
+                            f"team_budget_utilization {util:.2f} >= "
+                            f"{ctx.config.team_budget_utilization_downgrade:.2f}"
+                        )
+        cap = ctx.team_premium_cap_usd
+        if cap is not None and cap > 0:
+            cap_util = ctx.team_premium_spend_usd / cap
+            if cap_util >= ctx.config.team_premium_cap_utilization:
+                cap_touched = False
+                for p in ctx.providers:
+                    if self._is_premium(p):
+                        ctx.blocked.add(p.name)
+                        cap_touched = True
+                if cap_touched:
+                    ctx.matched.append("team_premium_cap_reached")
+                    ctx.budget_actions.append(
+                        {
+                            "scope": "team",
+                            "action": "premium_cap_hit",
+                            "reason": "premium_cap",
+                            "status": f"{cap_util:.2f}",
+                        }
+                    )
+
+    def _rule_workflow_budget_controls(self, ctx: "_RuleContext") -> None:
+        if not ctx.workflow_id:
+            return
+        budget = ctx.workflow_budget_usd
+        if budget is None or budget <= 0:
+            return
+        util = ctx.workflow_spent_usd / budget
+        if util < ctx.config.workflow_budget_utilization_downgrade:
+            return
+        touched = False
+        for p in ctx.providers:
+            if self._is_premium(p):
+                ctx.blocked.add(p.name)
+                touched = True
+            if ctx.intent == Intent.BATCH and p.cost_per_1k_tokens > 0.005:
+                ctx.blocked.add(p.name)
+                touched = True
+        if touched:
+            ctx.matched.append("workflow_budget_pressure_cost_optimize")
+            ctx.budget_actions.append(
+                {
+                    "scope": "workflow",
+                    "action": "prefer_cheaper",
+                    "reason": "budget_pressure",
+                    "status": f"{util:.2f}",
+                }
             )
 
     def _rule_interactive_latency_gate(self, ctx: "_RuleContext") -> None:
@@ -196,11 +300,20 @@ class _RuleContext:
     complexity: ComplexityResult
     tenant_budget_usd: float | None
     tenant_spent_usd: float
+    team_id: str | None
+    workflow_id: str | None
+    team_budget_usd: float | None
+    team_spent_usd: float
+    workflow_budget_usd: float | None
+    workflow_spent_usd: float
+    team_premium_cap_usd: float | None
+    team_premium_spend_usd: float
     brownout_status: BrownoutStatus | None
     brownout_max_latency_ms: int | None
     brownout_block_premium: bool
     brownout_prefer_low_latency: bool
     blocked: set[str]
     matched: list[str]
+    budget_actions: list[dict[str, str]]
     downgrade_reason_holder: list[str | None]
     config: PolicyEngineConfig
