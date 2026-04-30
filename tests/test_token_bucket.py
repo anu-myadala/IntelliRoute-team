@@ -107,11 +107,14 @@ def test_set_leader_changes_leader_id():
 
 
 def test_replay_log_entry_appends_to_log():
-    """Test that replay_log_entry appends to the replication log."""
+    """Replay appends log and advances bucket state on followers."""
     store = RateLimiterStore(default_config=BucketConfig(capacity=10, refill_rate=1))
     initial_length = store.log_length()
     store.replay_log_entry(ts=100.0, key="t|p", amount=1.0, allowed=True)
     assert store.log_length() == initial_length + 1
+    tokens, capacity = store.snapshot("t|p")
+    assert capacity == 10
+    assert tokens == 9
 
 
 def test_quota_hierarchy_exact_pair_wins():

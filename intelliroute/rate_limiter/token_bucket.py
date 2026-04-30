@@ -205,10 +205,15 @@ class RateLimiterStore:
         Followers call this to apply state changes from the leader's log.
         """
         with self._lock:
-            # Ensure bucket exists
             bucket = self._ensure_bucket(key)
-            # Apply the consumption (simplified: just track it in the log)
-            # In a real system this would reconstruct the bucket state
+            # Rebuild follower bucket state by replaying the leader decision
+            # at the original timestamp. This keeps eventual state convergence
+            # without requiring a heavyweight snapshot mechanism.
+            bucket._refill(ts)
+            if allowed:
+                # The leader only logs allowed when it had enough tokens.
+                # Guard against transient drift by clamping at zero.
+                bucket.tokens = max(0.0, bucket.tokens - amount)
             self._log.append((ts, key, amount, allowed))
 
     def log_length(self) -> int:
