@@ -199,6 +199,18 @@ class BrownoutManager:
                 "timeout_rate": round(self._timeout_rate_locked(), 4),
             }
 
+    def reset(self) -> None:
+        with self._lock:
+            self._degraded = False
+            self._reason = ""
+            self._entered_at_unix = None
+            self._enter_streak = 0
+            self._exit_streak = 0
+            self._latencies_ms.clear()
+            self._successes.clear()
+            self._timeouts.clear()
+            self._queue_depth = 0
+
     def _is_overloaded_locked(
         self, p95_latency_ms: float, error_rate: float, timeout_rate: float
     ) -> tuple[bool, str]:

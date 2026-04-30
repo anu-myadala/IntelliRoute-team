@@ -71,6 +71,16 @@ class TeamPremiumCap(BaseModel):
     premium_cap_usd: float
 
 
+class ResetPayload(BaseModel):
+    clear_budgets: bool = True
+
+
+@app.post("/reset")
+async def reset_state(payload: ResetPayload = ResetPayload()) -> dict:
+    accountant.reset(clear_budgets=payload.clear_budgets)
+    return {"ok": True, "cleared": "cost_tracker", "clear_budgets": payload.clear_budgets}
+
+
 @app.post("/budget")
 async def set_budget(b: Budget) -> dict:
     accountant.set_budget(b.tenant_id, b.budget_usd)

@@ -240,3 +240,18 @@ class CostAccountant:
         if h is None:
             return False
         return projected_cost_usd > h
+
+    def reset(self, *, clear_budgets: bool = True) -> None:
+        """Clear in-memory rollups/alerts for isolated experiment runs."""
+        with self._lock:
+            self._rollups.clear()
+            self._team_rollups.clear()
+            self._workflow_rollups.clear()
+            self._alerts.clear()
+            self._crossed.clear()
+            self._team_premium_spend.clear()
+            if clear_budgets:
+                self._budgets.clear()
+                self._team_budgets.clear()
+                self._workflow_budgets.clear()
+                self._team_premium_caps.clear()

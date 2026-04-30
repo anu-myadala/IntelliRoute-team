@@ -225,3 +225,12 @@ class RateLimiterStore:
         """Return a shallow copy of the replication log for followers."""
         with self._lock:
             return list(self._log)
+
+    def reset(self, *, clear_configs: bool = True, clear_log: bool = True) -> None:
+        """Reset mutable limiter state for reproducible eval runs."""
+        with self._lock:
+            self._buckets.clear()
+            if clear_log:
+                self._log.clear()
+            if clear_configs:
+                self._configs.clear()
