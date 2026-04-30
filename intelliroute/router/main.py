@@ -336,6 +336,35 @@ def _sla_backoff_ms(provider: ProviderInfo, intent: Intent, attempt: int) -> flo
     return bounded * (1.0 + random.random() * 0.25)
 
 
+def _provider_timeout_s(provider: ProviderInfo, intent: Intent) -> float:
+    """Per-provider timeout policy derived from declared SLA and defaults."""
+    sla_ms = provider.sla_p95_latency_ms.get(intent.value, 0.0)
+    if sla_ms <= 0:
+        return settings.provider_timeout_s
+    # Allow modest headroom over declared p95 while staying bounded.
+    derived = max(0.5, (sla_ms / 1000.0) * 1.5)
+    return min(settings.provider_timeout_s, derived)
+
+
+def _error_backoff_ms(
+    provider: ProviderInfo,
+    intent: Intent,
+    local_attempt: int,
+    error_kind: str | None,
+    retry_after_ms: int = 0,
+) -> float:
+    base = _sla_backoff_ms(provider, intent, local_attempt)
+    if error_kind == "rate_limited":
+        return max(base, float(retry_after_ms or 0))
+    if error_kind == "timeout":
+        return base * 1.5
+    if error_kind == "server_error":
+        return base * 1.2
+    if error_kind == "transport_error":
+        return base * 1.1
+    return base
+
+
 async def _publish_cost(event: CostEvent) -> None:
     assert _http is not None
     try:
@@ -614,10 +643,8 @@ async def _execute_completion(
     pending: list = list(ranked)
     i = 0
     attempts = 0
+    _provider_attempts: dict[str, int] = {}
     while pending:
-        if attempts > 0 and pending:
-            backoff_ms = _sla_backoff_ms(pending[0].provider, intent, attempts)
-            await asyncio.sleep(backoff_ms / 1000.0)
         # Budget-aware pre-call gate: if the next-up provider would push the
         # tenant past its budget, demote to the cheapest still-pending option.
         # This implements the spec's "fallback if marginal gain < cost delta"
@@ -653,6 +680,23 @@ async def _execute_completion(
                     fallback_used = True
         scored = pending.pop(0)
         info = scored.provider
+        local_attempt = _provider_attempts.get(info.name, 0) + 1
+        _provider_attempts[info.name] = local_attempt
+
+        # Per-provider retry budget. Keep at least one attempt per provider.
+        if local_attempt > max(1, int(info.max_retries)):
+            log_event(
+                log,
+                "provider_retry_budget_exhausted",
+                provider=info.name,
+                attempts=local_attempt - 1,
+                max_retries=info.max_retries,
+            )
+            fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            attempts += 1
+            continue
+
         allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
         if not allowed:
             log_event(
@@ -665,7 +709,9 @@ async def _execute_completion(
             attempts += 1
             continue
 
-        ok, latency_ms, data = await _call_provider(info, effective_req)
+        ok, latency_ms, data, error_kind, error_retry_after_ms, status_code, retryable = await _call_provider(
+            info, effective_req
+        )
         asyncio.create_task(_report_health(info.name, ok, latency_ms))
         weight_tuner.observe(intent, scored.sub_scores, ok)
 
@@ -691,11 +737,41 @@ async def _execute_completion(
 
         if not ok:
             log_event(
-                log, "provider_failed", provider=info.name, latency_ms=latency_ms
+                log,
+                "provider_failed",
+                provider=info.name,
+                latency_ms=latency_ms,
+                error_kind=error_kind,
+                status_code=status_code,
             )
-            last_error = f"provider_failed:{info.name}"
+            last_error = f"provider_failed:{info.name}:{error_kind or 'unknown'}"
             fallback_used = True
-            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            same_provider_retry_kinds = {"rate_limited", "timeout", "transport_error"}
+            if (
+                retryable
+                and error_kind in same_provider_retry_kinds
+                and local_attempt < max(1, int(info.max_retries))
+            ):
+                backoff_ms = _error_backoff_ms(
+                    info,
+                    intent,
+                    local_attempt,
+                    error_kind,
+                    retry_after_ms=error_retry_after_ms,
+                )
+                log_event(
+                    log,
+                    "provider_retry_scheduled",
+                    provider=info.name,
+                    local_attempt=local_attempt,
+                    max_retries=info.max_retries,
+                    error_kind=error_kind,
+                    backoff_ms=round(backoff_ms, 2),
+                )
+                await asyncio.sleep(backoff_ms / 1000.0)
+                pending.insert(0, scored)
+            else:
+                pending = policy.reorder_after_failure(pending, info.capability_tier)
             i += 1
             attempts += 1
             continue
@@ -753,18 +829,35 @@ async def _execute_completion(
 
 async def _call_provider(
     info: ProviderInfo, req: CompletionRequest
-) -> tuple[bool, float, dict | None]:
+) -> tuple[bool, float, dict | None, str | None, int, int | None, bool]:
     assert _http is not None
     start = time.monotonic()
+    intent = classify(req)
+    timeout_s = _provider_timeout_s(info, intent)
     try:
-        ok, data = await call_provider(_http, info, req)
-        return ok, (time.monotonic() - start) * 1000, data
+        ok, data = await call_provider(_http, info, req, timeout_s=timeout_s)
+        return ok, (time.monotonic() - start) * 1000, data, None, 0, None, True
     except ProviderCallError as exc:
-        log_event(log, "provider_call_config_error", provider=info.name, error=str(exc))
-        return False, (time.monotonic() - start) * 1000, None
+        log_event(
+            log,
+            "provider_call_error",
+            provider=info.name,
+            error=str(exc),
+            error_kind=getattr(exc, "kind", "unknown"),
+            status_code=getattr(exc, "status_code", None),
+        )
+        return (
+            False,
+            (time.monotonic() - start) * 1000,
+            None,
+            getattr(exc, "kind", "unknown"),
+            int(getattr(exc, "retry_after_ms", 0) or 0),
+            getattr(exc, "status_code", None),
+            bool(getattr(exc, "retryable", False)),
+        )
     except Exception as exc:
         log_event(log, "provider_call_error", provider=info.name, error=str(exc))
-        return False, (time.monotonic() - start) * 1000, None
+        return False, (time.monotonic() - start) * 1000, None, "unknown", 0, None, False
 
 
 class RouteDecision(BaseModel):
