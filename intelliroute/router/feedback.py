@@ -245,3 +245,8 @@ class FeedbackCollector:
                 )
                 for name, m in self._metrics.items()
             }
+
+    def reset(self) -> None:
+        """Clear all in-memory feedback metrics."""
+        with self._lock:
+            self._metrics.clear()
