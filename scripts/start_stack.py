@@ -112,6 +112,8 @@ def _spawn_service(
     port = int(os.environ.get(svc["port_env"], svc["default_port"]))
     env = base_env.copy()
     env.update(svc["env"])
+    if "mock_provider" in svc["module"]:
+        env["INTELLIROUTE_MOCK_PUBLIC_PORT"] = str(port)
     cmd = [
         sys.executable,
         "-m",
@@ -135,6 +137,23 @@ def main() -> int:
     base_env = os.environ.copy()
     base_env["PYTHONPATH"] = str(ROOT)
     host = os.environ.get("INTELLIROUTE_HOST", "127.0.0.1")
+    router_port = os.environ.get("INTELLIROUTE_ROUTER_PORT", "8001")
+    base_env.setdefault(
+        "INTELLIROUTE_ROUTER_URL",
+        os.environ.get("INTELLIROUTE_ROUTER_URL", f"http://{host}:{router_port}"),
+    )
+    base_env.setdefault(
+        "INTELLIROUTE_MOCK_REGISTRATION",
+        os.environ.get("INTELLIROUTE_MOCK_REGISTRATION", "hybrid"),
+    )
+    base_env.setdefault(
+        "INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS",
+        os.environ.get("INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS", "30"),
+    )
+    base_env.setdefault(
+        "INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS",
+        os.environ.get("INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS", "8"),
+    )
     use_external = _should_use_external_providers()
     services = SERVICES[3:] if use_external else SERVICES
     frontend_port = int(os.environ.get("INTELLIROUTE_FRONTEND_PORT", "3000"))

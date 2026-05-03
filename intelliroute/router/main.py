@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from ..common.config import settings
 from ..common.logging import get_logger, log_event
+from ..common.mock_provider_catalog import list_mock_provider_infos_from_settings
 from ..common.models import (
     BrownoutStatus,
     CompletionRequest,
@@ -123,39 +124,16 @@ async def _shutdown() -> None:
     await asyncio.gather(*_worker_tasks, return_exceptions=True)
 
 
+def _mock_registration_mode() -> str:
+    """legacy = bootstrap only; hybrid = bootstrap + mock self-register/heartbeat; dynamic = self-register only."""
+    raw = os.environ.get("INTELLIROUTE_MOCK_REGISTRATION", "hybrid").strip().lower()
+    if raw in ("legacy", "hybrid", "dynamic"):
+        return raw
+    return "hybrid"
+
+
 def _mock_bootstrap() -> list[ProviderInfo]:
-    return [
-        ProviderInfo(
-            name="mock-fast",
-            url=f"http://{settings.host}:{settings.mock_fast_port}",
-            model="fast-1",
-            provider_type="mock",
-            capability={"interactive": 0.85, "reasoning": 0.45, "batch": 0.5, "code": 0.6},
-            cost_per_1k_tokens=0.002,
-            typical_latency_ms=120,
-            capability_tier=2,
-        ),
-        ProviderInfo(
-            name="mock-smart",
-            url=f"http://{settings.host}:{settings.mock_smart_port}",
-            model="smart-1",
-            provider_type="mock",
-            capability={"interactive": 0.7, "reasoning": 0.95, "batch": 0.8, "code": 0.9},
-            cost_per_1k_tokens=0.02,
-            typical_latency_ms=900,
-            capability_tier=3,
-        ),
-        ProviderInfo(
-            name="mock-cheap",
-            url=f"http://{settings.host}:{settings.mock_cheap_port}",
-            model="cheap-1",
-            provider_type="mock",
-            capability={"interactive": 0.55, "reasoning": 0.4, "batch": 0.75, "code": 0.45},
-            cost_per_1k_tokens=0.0003,
-            typical_latency_ms=600,
-            capability_tier=1,
-        ),
-    ]
+    return list_mock_provider_infos_from_settings(settings)
 
 
 def _external_bootstrap() -> list[ProviderInfo]:
@@ -197,9 +175,24 @@ def _bootstrap_registry() -> None:
         registry.bulk_register(external)
         log_event(log, "bootstrap_registry", mode="external", providers=[p.name for p in external])
         return
+    mode = _mock_registration_mode()
+    if mode == "dynamic":
+        log_event(
+            log,
+            "bootstrap_registry",
+            mode="dynamic",
+            skipped_mock_bootstrap=True,
+            note="mocks must self-register",
+        )
+        return
     mocks = _mock_bootstrap()
     registry.bulk_register(mocks)
-    log_event(log, "bootstrap_registry", mode="mock", providers=[p.name for p in mocks])
+    log_event(
+        log,
+        "bootstrap_registry",
+        mode=mode,
+        providers=[p.name for p in mocks],
+    )
 
 
 @app.get("/health")
