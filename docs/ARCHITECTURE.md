@@ -61,14 +61,28 @@ a provider.
   sum of normalised sub-scores.
 - **Registry** (`registry.py`): in-memory service registry analogous
   to Consul/etcd. Stores `ProviderInfo` records with URL, model,
-  capabilities, and cost metadata.
+  capabilities, and cost metadata. Bootstrap rows use
+  `lease_ttl_seconds=None` (always routable until removed). API
+  registrations from mocks use a finite lease and require periodic
+  `POST /providers/heartbeat` refresh or they become non-routable
+  (still listed with `stale_names` in snapshots).
+- **Mock catalog** (`common/mock_provider_catalog.py`): shared
+  `ProviderInfo` definitions used by router bootstrap and by each mock’s
+  `POST /providers/register` payload so metadata stays consistent.
+- **Registration mode** (`INTELLIROUTE_MOCK_REGISTRATION`, default
+  `hybrid`): `legacy` — router only bootstraps mocks (no mock client);
+  `hybrid` — bootstrap for fast demo startup plus mocks overwrite with
+  leased rows and heartbeats; `dynamic` — router skips mock bootstrap,
+  mocks must register before routing.
 - **Feedback** (`feedback.py`): tracks per-provider latency EMA and
   success-rate EMA. Fed back into the policy's success-rate sub-score.
 - **Queue** (`queue.py`): priority request queue with load-shedding
   when depth exceeds a configurable threshold.
-- **Main** (`main.py`): the FastAPI app. Bootstrap registers the three
-  mock providers. The `/complete` endpoint runs the full routing +
-  fallback pipeline. `/decide` returns the ranking without executing.
+- **Main** (`main.py`): the FastAPI app. On startup, bootstrap may
+  register mock providers (unless `dynamic` mode). Exposes
+  `/providers/register`, `/providers/heartbeat`, and registry snapshots.
+  The `/complete` endpoint runs the full routing + fallback pipeline.
+  `/decide` returns the ranking without executing.
 
 ### 4.3 Rate Limiter (`intelliroute/rate_limiter/`)
 
@@ -105,6 +119,12 @@ a provider.
   rate, cost per 1K tokens.
 - `/v1/chat` simulates an LLM completion.
 - `/admin/force_fail` test hook to flip into failing mode.
+- When `INTELLIROUTE_MOCK_REGISTRATION` is `hybrid` or `dynamic`, a
+  background task registers with the router (retry with backoff if the
+  router is not up yet), then sends heartbeats on
+  `INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS` (default 8s) so
+  the lease (`INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS`, default 30s)
+  stays valid.
 
 ## 5. Consistency Model
 
@@ -113,7 +133,7 @@ a provider.
 | Rate-limit checks | Strong (leader) | Must not over-issue tokens                          |
 | Cost rollups      | Eventual      | Fire-and-forget; slight delay is acceptable          |
 | Circuit breaker   | Per-instance  | Each health-monitor instance maintains its own state |
-| Registry          | Per-router    | Providers registered at startup; no cross-replica sync needed |
+| Registry          | Per-router    | Bootstrap + optional dynamic leases; heartbeats refresh TTL; no cross-replica sync |
 
 ## 6. Failure Modes and Recovery
 
