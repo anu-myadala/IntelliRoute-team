@@ -477,6 +477,13 @@ defined in `intelliroute/common/config.py`. The most important variables:
 | `INTELLIROUTE_MOCK_SMART_PORT`        | `9002`           | mock-smart provider              |
 | `INTELLIROUTE_MOCK_CHEAP_PORT`        | `9003`           | mock-cheap provider              |
 | `INTELLIROUTE_DEMO_KEY`               | `demo-key-123`   | Demo API key for `demo-tenant`   |
+| `INTELLIROUTE_ROUTER_URL`             | *(derived)*      | Optional full router base URL for mock self-registration; defaults to `http://INTELLIROUTE_HOST:INTELLIROUTE_ROUTER_PORT` |
+| `INTELLIROUTE_MOCK_REGISTRATION`      | `hybrid`         | How mocks join the registry: `legacy` (router bootstrap only), `hybrid` (bootstrap + mocks register and heartbeat), `dynamic` (bootstrap skips demo mocks; mocks must register) |
+| `INTELLIROUTE_MOCK_PUBLIC_PORT`       | *(unset)*        | Each mock process must set this to its HTTP port for `hybrid` / `dynamic` so the router learns the live URL |
+| `INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS` | `30`        | Lease length for dynamically registered providers; stale without heartbeats |
+| `INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS` | `8` | How often mocks call `POST /providers/heartbeat` |
+
+`scripts/start_stack.py` sets the mock public ports and the variables above so the demo stack stays routable under the default **hybrid** mode.
 
 ---
 
