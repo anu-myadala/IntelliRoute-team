@@ -6,6 +6,8 @@ from pathlib import Path
 
 _LOADED = False
 
+_DOTENV_SKIP_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
 
 def _parse_line(line: str) -> tuple[str, str] | None:
     line = line.strip()
@@ -30,6 +32,10 @@ def _parse_line(line: str) -> tuple[str, str] | None:
 def load_dotenv_if_present() -> None:
     global _LOADED
     if _LOADED:
+        return
+    # Subprocess / test isolation: do not merge project .env (e.g. CI or spawned routers).
+    if os.environ.get("INTELLIROUTE_SKIP_DOTENV", "").strip().lower() in _DOTENV_SKIP_TRUTHY:
+        _LOADED = True
         return
     env_path = Path(__file__).resolve().parents[2] / ".env"
     if env_path.exists():

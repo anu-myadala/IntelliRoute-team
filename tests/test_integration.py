@@ -107,6 +107,10 @@ class _Stack:
 
     def _base_env(self) -> dict:
         env = os.environ.copy()
+        # Subprocess stack: no project .env merge, no inherited API keys (stable bootstrap).
+        env["INTELLIROUTE_SKIP_DOTENV"] = "1"
+        for _k in ("GEMINI_API_KEY", "GROQ_API_KEY"):
+            env.pop(_k, None)
         env["PYTHONPATH"] = str(ROOT)
         env["INTELLIROUTE_HOST"] = "127.0.0.1"
         env["INTELLIROUTE_GATEWAY_PORT"] = str(self.ports["gateway"])
