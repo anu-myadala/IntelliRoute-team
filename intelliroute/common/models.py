@@ -24,6 +24,46 @@ class Intent(str, Enum):
     CODE = "code"                # code generation / completion
 
 
+class ProviderType(str, Enum):
+    """Known upstream provider backend types.
+
+    Stored in ``ProviderInfo.provider_type`` to let the provider-client
+    adapter layer select the correct request/response transformation without
+    string comparisons scattered across the codebase.
+
+    The ``MOCK`` type is used in tests and demos; real deployments use one of
+    the cloud or self-hosted variants.
+    """
+
+    MOCK = "mock"             # simulated backend (tests / demos)
+    GROQ = "groq"             # Groq cloud inference API
+    GEMINI = "gemini"         # Google Gemini API
+    OPENAI = "openai"         # OpenAI Chat Completions API
+    ANTHROPIC = "anthropic"   # Anthropic Messages API
+    OLLAMA = "ollama"         # locally-hosted Ollama server
+    VLLM = "vllm"             # vLLM OpenAI-compatible server
+
+
+class CapabilityKey(str, Enum):
+    """Keys used in ``ProviderInfo.capability`` score dicts.
+
+    Each member value mirrors an ``Intent`` value so the routing policy can
+    look up a provider's self-reported capability score for the current intent
+    directly:
+
+        score = provider.capability.get(CapabilityKey.REASONING.value, 0.5)
+
+    Capability scores are floats in ``[0, 1]`` — higher means the provider is
+    expected to perform better on that class of task. A missing key is treated
+    as a neutral 0.5 by the multi-objective ranker.
+    """
+
+    INTERACTIVE = "interactive"  # speed-critical chat responses
+    REASONING = "reasoning"      # deep chain-of-thought tasks
+    BATCH = "batch"              # throughput-optimised offline work
+    CODE = "code"                # code generation and debugging
+
+
 class ChatMessage(BaseModel):
     role: str = Field(..., description="'system', 'user', or 'assistant'")
     content: str

@@ -176,6 +176,37 @@ async def check_budget(tenant_id: str, projected_cost_usd: float = 0.0) -> dict:
     }
 
 
+@app.get("/history/{tenant_id}")
+async def event_history(
+    tenant_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """Return a paginated slice of raw cost events recorded for a tenant.
+
+    Events are ordered oldest-first so a caller can page forward through
+    history by incrementing ``offset`` by ``limit`` on each request.
+
+    Query parameters
+    ----------------
+    limit  : maximum events per page (default: 100, max enforced by the log cap)
+    offset : zero-based start index into the tenant's filtered event list
+    """
+    # Clamp limit to a sane upper bound to avoid accidentally large responses.
+    clamped_limit = min(limit, 500)
+    events = accountant.event_history(tenant_id, limit=clamped_limit, offset=offset)
+    total = accountant.total_event_count(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "offset": offset,
+        "limit": clamped_limit,
+        "total": total,
+        "count": len(events),
+        # Serialize each CostEvent as a plain dict for JSON transport.
+        "events": [e.model_dump() for e in events],
+    }
+
+
 class CostTrackerStats(BaseModel):
     """Aggregate cost-tracker statistics returned by GET /stats."""
 

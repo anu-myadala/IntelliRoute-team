@@ -33,6 +33,7 @@ import uuid
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from ..common.logging import get_logger, log_event
@@ -77,7 +78,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_state = {"force_fail": False}
+# ---------------------------------------------------------------------------
+# Fault-injection state dictionary.
+# All flags default to False (normal operation). Each can be set independently
+# via the /admin/* endpoints so tests can compose failure scenarios precisely.
+#
+# force_fail       — return HTTP 503 Service Unavailable on every request
+# force_timeout    — sleep indefinitely, simulating a hung upstream connection
+# force_rate_limit — return HTTP 429 Too Many Requests with a Retry-After header
+# force_malformed  — return a syntactically broken JSON body (triggers parse errors)
+# ---------------------------------------------------------------------------
+_state = {
+    "force_fail": False,
+    "force_timeout": False,
+    "force_rate_limit": False,
+    "force_malformed": False,
+}
 _registration_task: asyncio.Task[None] | None = None
 
 
@@ -249,23 +265,127 @@ class ForceFailBody(BaseModel):
     fail: bool = True
 
 
+class ForceTimeoutBody(BaseModel):
+    timeout: bool = True
+
+
+class ForceRateLimitBody(BaseModel):
+    rate_limit: bool = True
+
+
+class ForceMalformedBody(BaseModel):
+    malformed: bool = True
+
+
 @app.post("/admin/force_fail")
 async def force_fail(body: ForceFailBody = ForceFailBody()) -> dict:
-    """Test hook: flip the provider into failing mode."""
+    """Test hook: flip the provider into hard-failure (503) mode."""
     _state["force_fail"] = body.fail
     return {"force_fail": body.fail}
 
 
+@app.post("/admin/force_timeout")
+async def admin_force_timeout(body: ForceTimeoutBody = ForceTimeoutBody()) -> dict:
+    """Test hook: make every /v1/chat request hang indefinitely.
+
+    The mock sleeps for 300 s so any real client timeout fires first, giving
+    the same observable behaviour as a truly hung upstream without actually
+    blocking the event loop for that long (the asyncio sleep is cancellable).
+    """
+    _state["force_timeout"] = body.timeout
+    return {"force_timeout": body.timeout}
+
+
+@app.post("/admin/force_rate_limit")
+async def admin_force_rate_limit(body: ForceRateLimitBody = ForceRateLimitBody()) -> dict:
+    """Test hook: return HTTP 429 with a Retry-After header on every request.
+
+    Exercises the router's SLA-aware retry back-off logic and the rate-limiter's
+    provider-level circuit breaker without needing a real rate-limited API.
+    """
+    _state["force_rate_limit"] = body.rate_limit
+    return {"force_rate_limit": body.rate_limit}
+
+
+@app.post("/admin/force_malformed")
+async def admin_force_malformed(body: ForceMalformedBody = ForceMalformedBody()) -> dict:
+    """Test hook: return a syntactically broken JSON body on every request.
+
+    The response has HTTP 200 so the router does not treat it as a transport
+    failure, but the provider-client will fail to parse it and the feedback
+    collector's JSON-parse signal will flag the response as anomalous.
+    """
+    _state["force_malformed"] = body.malformed
+    return {"force_malformed": body.malformed}
+
+
+@app.post("/admin/reset")
+async def admin_reset() -> dict:
+    """Clear all fault-injection flags, returning the provider to normal operation.
+
+    Useful at the start of a new test scenario to guarantee a clean state
+    without restarting the process.
+    """
+    _state["force_fail"] = False
+    _state["force_timeout"] = False
+    _state["force_rate_limit"] = False
+    _state["force_malformed"] = False
+    log_event(log, "admin_reset", provider=NAME)
+    return {"reset": True, "provider": NAME, "all_faults_cleared": True}
+
+
+@app.get("/admin/state")
+async def admin_state() -> dict:
+    """Return the current fault-injection state for observability.
+
+    Lets test harnesses verify which faults are active without needing to
+    track the state themselves across multiple admin calls.
+    """
+    return {"provider": NAME, "fault_state": dict(_state)}
+
+
 @app.post("/v1/chat", response_model=MockChatResponse)
-async def chat(req: MockChatRequest) -> MockChatResponse:
+async def chat(req: MockChatRequest) -> MockChatResponse | Response:
     # Simulate latency.
     latency = max(0.0, (LATENCY_MS + random.uniform(-JITTER_MS, JITTER_MS)) / 1000.0)
     await asyncio.sleep(latency)
 
-    # Simulate failures.
+    # ------------------------------------------------------------------
+    # Fault injection — checked in priority order before normal logic.
+    # ------------------------------------------------------------------
+
+    # 503: hard failure (provider down / overloaded)
     if _state["force_fail"] or random.random() < FAILURE_RATE:
         log_event(log, "simulated_failure", provider=NAME)
         raise HTTPException(status_code=503, detail=f"{NAME} temporarily unavailable")
+
+    # 504: timeout simulation — sleep far longer than any real client timeout.
+    # The router's httpx client will raise a ReadTimeout before this wakes up,
+    # which exercises the same code path as a real hung upstream.
+    if _state["force_timeout"]:
+        log_event(log, "simulated_timeout", provider=NAME)
+        await asyncio.sleep(300.0)
+        raise HTTPException(status_code=504, detail=f"{NAME} gateway timeout (simulated)")
+
+    # 429: rate-limit simulation — includes a Retry-After header so the router's
+    # SLA-aware retry logic can respect the back-off window.
+    if _state["force_rate_limit"]:
+        log_event(log, "simulated_rate_limit", provider=NAME)
+        raise HTTPException(
+            status_code=429,
+            detail=f"{NAME} rate limited (simulated) — retry after 5s",
+            headers={"Retry-After": "5"},
+        )
+
+    # 200 with broken body: deliberately truncated JSON to exercise the
+    # provider-client's parse-error handling and hallucination signal path.
+    if _state["force_malformed"]:
+        log_event(log, "simulated_malformed_response", provider=NAME)
+        return Response(
+            content='{"provider": "' + NAME + '", "broken_json":',
+            media_type="application/json",
+            status_code=200,
+        )
 
     prompt_text = " ".join(m.get("content", "") for m in req.messages)
     prompt_tokens = max(1, len(prompt_text) // 4)
