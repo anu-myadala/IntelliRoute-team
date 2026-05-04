@@ -19,6 +19,14 @@ from typing import Optional
 
 from ..common.models import CostEvent, CostSummary
 
+# Maximum number of raw cost events to retain in the in-memory audit log.
+# Once the cap is reached the oldest entry is evicted (FIFO) to prevent
+# unbounded memory growth during long-running demo or test sessions.
+# In production this would be an append-only durable log (e.g. Kafka),
+# so the cap is intentionally generous at 10 000 — enough for hours of
+# demo traffic without any risk of OOM.
+_MAX_EVENT_HISTORY: int = 10_000
+
 
 @dataclass
 class _TenantRollup:
@@ -36,7 +44,11 @@ class ScopeRollup:
 
 
 class CostAccountant:
-    def __init__(self, budgets: dict[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        budgets: dict[str, float] | None = None,
+        max_history: int = _MAX_EVENT_HISTORY,
+    ) -> None:
         self._rollups: dict[str, _TenantRollup] = defaultdict(_TenantRollup)
         self._team_rollups: dict[str, ScopeRollup] = defaultdict(ScopeRollup)
         self._workflow_rollups: dict[str, ScopeRollup] = defaultdict(ScopeRollup)
@@ -49,6 +61,11 @@ class CostAccountant:
         # Set of tenants that have already crossed their budget; prevents
         # alert spam once the threshold has been breached.
         self._crossed: set[str] = set()
+        # Append-only audit log of raw CostEvent objects, bounded by max_history.
+        # Provides a queryable record of every completion that incurred cost,
+        # enabling the /history endpoint to replay or filter events post-hoc.
+        self._event_log: list[CostEvent] = []
+        self._max_history: int = max_history
         self._lock = threading.Lock()
 
     def set_budget(self, tenant_id: str, budget_usd: float) -> None:
@@ -94,6 +111,12 @@ class CostAccountant:
 
     def record(self, event: CostEvent) -> None:
         with self._lock:
+            # Append to the audit log first so the event is always present even
+            # if the rollup update raises an unexpected exception.
+            self._event_log.append(event)
+            # Evict the oldest entry when the cap is reached so memory stays bounded.
+            if len(self._event_log) > self._max_history:
+                del self._event_log[0]
             r = self._rollups[event.tenant_id]
             r.total_requests += 1
             r.total_tokens += event.prompt_tokens + event.completion_tokens
@@ -241,6 +264,52 @@ class CostAccountant:
             return False
         return projected_cost_usd > h
 
+    def event_history(
+        self,
+        tenant_id: str | None = None,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CostEvent]:
+        """Return a paginated slice of the raw cost-event audit log.
+
+        Events are ordered oldest-first, matching the order they arrived at
+        the service. This ordering allows callers to paginate forward in time
+        by incrementing ``offset`` by ``limit`` on each successive request.
+
+        Parameters
+        ----------
+        tenant_id:
+            When supplied, only events whose ``tenant_id`` matches are
+            included. Pass ``None`` to retrieve events across all tenants
+            (useful for operator dashboards).
+        limit:
+            Maximum number of events to return per page (default: 100).
+            The actual count may be less if the log has fewer entries.
+        offset:
+            Zero-based start index into the filtered event list (default: 0).
+            Combine with ``limit`` for pagination.
+        """
+        with self._lock:
+            if tenant_id is not None:
+                # Filter inside the lock so we hold a consistent snapshot.
+                events = [e for e in self._event_log if e.tenant_id == tenant_id]
+            else:
+                events = list(self._event_log)
+        # Slice outside the lock — we hold an independent copy at this point.
+        return events[offset : offset + limit]
+
+    def total_event_count(self, tenant_id: str | None = None) -> int:
+        """Return the total number of events in the log, optionally filtered by tenant.
+
+        Cheaper than event_history() when the caller only needs the count for
+        pagination metadata (e.g. to compute the ``total`` field in a response).
+        """
+        with self._lock:
+            if tenant_id is not None:
+                return sum(1 for e in self._event_log if e.tenant_id == tenant_id)
+            return len(self._event_log)
+
     def reset(self, *, clear_budgets: bool = True) -> None:
         """Clear in-memory rollups/alerts for isolated experiment runs."""
         with self._lock:
@@ -250,6 +319,9 @@ class CostAccountant:
             self._alerts.clear()
             self._crossed.clear()
             self._team_premium_spend.clear()
+            # Always clear the event log on reset so history doesn't bleed
+            # across test scenarios.
+            self._event_log.clear()
             if clear_budgets:
                 self._budgets.clear()
                 self._team_budgets.clear()
