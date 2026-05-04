@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from ..common.config import settings
 from ..common.logging import get_logger, log_event
 from ..common.mock_provider_catalog import list_mock_provider_infos_from_settings
+from ..common.provider_mode import build_bootstrap_result
 from ..common.models import (
     BrownoutStatus,
     CompletionRequest,
@@ -47,6 +48,12 @@ from .intent import classify
 from .policy import RoutingPolicy, ScoredProvider
 from .policy_engine import PolicyEvaluator
 from .provider_clients import ProviderCallError, call_provider
+from .provider_daily_quota import (
+    QUOTA_EXHAUSTED_DETAIL,
+    apply_daily_quota_to_ranked,
+    daily_quota_limit,
+    daily_quota_tracker,
+)
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
 from .weight_tuner import WeightTuner
@@ -171,28 +178,41 @@ def _bootstrap_registry() -> None:
     if os.environ.get("INTELLIROUTE_SKIP_BOOTSTRAP") == "1":
         return
     external = _external_bootstrap()
-    if external and not settings.use_mock_providers:
-        registry.bulk_register(external)
-        log_event(log, "bootstrap_registry", mode="external", providers=[p.name for p in external])
-        return
-    mode = _mock_registration_mode()
-    if mode == "dynamic":
+    mocks = _mock_bootstrap()
+    mock_mode = _mock_registration_mode()
+    result = build_bootstrap_result(settings, external, mocks, mock_mode)
+
+    if result.external_only_no_keys:
         log_event(
             log,
             "bootstrap_registry",
-            mode="dynamic",
-            skipped_mock_bootstrap=True,
-            note="mocks must self-register",
+            mode="external_only",
+            error="no GEMINI_API_KEY or GROQ_API_KEY; no providers registered",
+            providers=[],
         )
         return
-    mocks = _mock_bootstrap()
-    registry.bulk_register(mocks)
-    log_event(
-        log,
-        "bootstrap_registry",
-        mode=mode,
-        providers=[p.name for p in mocks],
-    )
+
+    if result.providers:
+        registry.bulk_register(result.providers)
+
+    if result.skipped_mock_bootstrap:
+        log_event(
+            log,
+            "bootstrap_registry",
+            mode=result.log_mode,
+            skipped_mock_bootstrap=True,
+            note="mocks must self-register",
+            providers=[p.name for p in result.providers],
+        )
+        return
+
+    if result.providers:
+        log_event(
+            log,
+            "bootstrap_registry",
+            mode=result.log_mode,
+            providers=[p.name for p in result.providers],
+        )
 
 
 @app.get("/health")
@@ -630,6 +650,21 @@ async def _execute_completion(
         )
         raise HTTPException(status_code=503, detail="no providers registered")
 
+    _ranked_before_quota = ranked
+    ranked = apply_daily_quota_to_ranked(ranked, settings)
+    if not ranked:
+        _record_brownout_result(
+            effective_req.tenant_id,
+            latency_ms=(time.monotonic() - started) * 1000,
+            success=False,
+        )
+        log_event(
+            log,
+            "provider_daily_quota_all_exhausted",
+            candidates=[s.provider.name for s in _ranked_before_quota],
+        )
+        raise HTTPException(status_code=429, detail=QUOTA_EXHAUSTED_DETAIL)
+
     log_event(
         log,
         "route_decided",
@@ -689,6 +724,22 @@ async def _execute_completion(
         info = scored.provider
         local_attempt = _provider_attempts.get(info.name, 0) + 1
         _provider_attempts[info.name] = local_attempt
+
+        lim_q = daily_quota_limit(info.name, settings)
+        if lim_q is not None and daily_quota_tracker.usage(info.name) >= lim_q:
+            log_event(
+                log,
+                "provider_daily_quota_skip",
+                provider=info.name,
+                used=daily_quota_tracker.usage(info.name),
+                limit=lim_q,
+                reason="daily_quota_reached_mid_route",
+            )
+            last_error = f"daily_quota_exhausted:{info.name}"
+            fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            attempts += 1
+            continue
 
         # Per-provider retry budget. Keep at least one attempt per provider.
         if local_attempt > max(1, int(info.max_retries)):
@@ -810,6 +861,8 @@ async def _execute_completion(
             latency_ms=(time.monotonic() - started) * 1000,
             success=True,
         )
+        if daily_quota_limit(info.name, settings) is not None:
+            daily_quota_tracker.record_successful_completion(info.name)
         return CompletionResponse(
             request_id=request_id,
             provider=info.name,
@@ -935,6 +988,7 @@ class ResetPayload(BaseModel):
     reset_queue: bool = True
     reset_tuner: bool = True
     reset_routing_mode: bool = True
+    reset_provider_daily_quotas: bool = True
 
 
 @app.get("/weights")
@@ -970,6 +1024,8 @@ async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
         weight_tuner.reset(reset_policy_weights=True)
     if body.reset_routing_mode:
         _set_routing_mode("intelliroute")
+    if body.reset_provider_daily_quotas:
+        daily_quota_tracker.clear()
     _rr_cursor = 0
     return {
         "ok": True,
@@ -979,6 +1035,7 @@ async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
         "reset_queue": body.reset_queue,
         "reset_tuner": body.reset_tuner,
         "reset_routing_mode": body.reset_routing_mode,
+        "reset_provider_daily_quotas": body.reset_provider_daily_quotas,
     }
 
 
@@ -1081,6 +1138,11 @@ async def decide(req: CompletionRequest) -> RouteDecision:
     intent, health, candidates, pe, bs, _budget_ctx = await _prepare_routing(req)
     routing_mode = _get_routing_mode()
     ranked = _rank_candidates(routing_mode, candidates, health, intent, req)
+    if ranked:
+        before_q = ranked
+        ranked = apply_daily_quota_to_ranked(ranked, settings)
+        if not ranked and before_q:
+            raise HTTPException(status_code=429, detail=QUOTA_EXHAUSTED_DETAIL)
     return RouteDecision(
         intent=intent.value,
         ranked=[s.provider.name for s in ranked],
