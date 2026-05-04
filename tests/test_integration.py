@@ -52,6 +52,44 @@ def _wait_ready(url: str, timeout: float = 10.0) -> None:
     raise RuntimeError(f"service at {url} did not become ready within {timeout:.1f}s: {last_err}")
 
 
+def _wait_hybrid_registry_leased(router_url: str, timeout: float = 20.0) -> dict:
+    """Mocks start before the router; wait until all three have self-registered with a lease."""
+    deadline = time.monotonic() + timeout
+    last_body: dict | None = None
+    want = {"mock-fast", "mock-smart", "mock-cheap"}
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"{router_url}/providers/registry", timeout=10.0)
+        except Exception:
+            time.sleep(0.15)
+            continue
+        if r.status_code != 200:
+            time.sleep(0.15)
+            continue
+        body = r.json()
+        last_body = body
+        if body.get("providers_total") != 3 or body.get("providers_active") != 3:
+            time.sleep(0.15)
+            continue
+        if set(body.get("stale_names") or []) != set():
+            time.sleep(0.15)
+            continue
+        rows = body.get("providers") or []
+        names = {p.get("name") for p in rows}
+        if names != want:
+            time.sleep(0.15)
+            continue
+        if len(rows) == 3 and all(
+            p.get("routable") is True and p.get("lease_ttl_seconds") is not None for p in rows
+        ):
+            return body
+        time.sleep(0.15)
+    pytest.fail(
+        "hybrid registry did not converge to three leased routable mocks within "
+        f"{timeout:.1f}s; last snapshot: {last_body!r}"
+    )
+
+
 class _Stack:
     def __init__(self, env_overrides: dict[str, str] | None = None) -> None:
         self.ports = {
@@ -69,6 +107,10 @@ class _Stack:
 
     def _base_env(self) -> dict:
         env = os.environ.copy()
+        # Subprocess stack: no project .env merge, no inherited API keys (stable bootstrap).
+        env["INTELLIROUTE_SKIP_DOTENV"] = "1"
+        for _k in ("GEMINI_API_KEY", "GROQ_API_KEY"):
+            env.pop(_k, None)
         env["PYTHONPATH"] = str(ROOT)
         env["INTELLIROUTE_HOST"] = "127.0.0.1"
         env["INTELLIROUTE_GATEWAY_PORT"] = str(self.ports["gateway"])
@@ -132,6 +174,7 @@ class _Stack:
                 "MOCK_NAME": "mock-fast", "MOCK_MODEL": "fast-1",
                 "MOCK_LATENCY_MS": "30", "MOCK_LATENCY_JITTER_MS": "5",
                 "MOCK_FAILURE_RATE": "0.0", "MOCK_COST_PER_1K": "0.002",
+                "INTELLIROUTE_MOCK_PUBLIC_PORT": str(self.ports["mock_fast"]),
             },
         )
         self._spawn_and_wait(
@@ -141,6 +184,7 @@ class _Stack:
                 "MOCK_NAME": "mock-smart", "MOCK_MODEL": "smart-1",
                 "MOCK_LATENCY_MS": "80", "MOCK_LATENCY_JITTER_MS": "5",
                 "MOCK_FAILURE_RATE": "0.0", "MOCK_COST_PER_1K": "0.02",
+                "INTELLIROUTE_MOCK_PUBLIC_PORT": str(self.ports["mock_smart"]),
             },
         )
         self._spawn_and_wait(
@@ -150,6 +194,7 @@ class _Stack:
                 "MOCK_NAME": "mock-cheap", "MOCK_MODEL": "cheap-1",
                 "MOCK_LATENCY_MS": "60", "MOCK_LATENCY_JITTER_MS": "5",
                 "MOCK_FAILURE_RATE": "0.0", "MOCK_COST_PER_1K": "0.0003",
+                "INTELLIROUTE_MOCK_PUBLIC_PORT": str(self.ports["mock_cheap"]),
             },
         )
         self._spawn_and_wait("intelliroute.rate_limiter.main:app", self.ports["rate_limiter"])
@@ -228,6 +273,19 @@ def _workflow_batch_request() -> dict:
         "max_tokens": 50,
         "intent_hint": "batch",
     }
+
+
+def test_hybrid_registry_lists_three_routable_mocks(stack):
+    """With default hybrid mode, mocks self-register and all three stay routable."""
+    body = _wait_hybrid_registry_leased(stack.router_url)
+    assert body["providers_total"] == 3
+    assert body["providers_active"] == 3
+    assert set(body["stale_names"]) == set()
+    names = {p["name"] for p in body["providers"]}
+    assert names == {"mock-fast", "mock-smart", "mock-cheap"}
+    for row in body["providers"]:
+        assert row["routable"] is True
+        assert row["lease_ttl_seconds"] is not None
 
 
 def test_interactive_prompt_routes_to_fast(stack):

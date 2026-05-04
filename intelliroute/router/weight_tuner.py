@@ -65,6 +65,15 @@ class WeightTuner:
         )
         self._samples: dict[Intent, int] = defaultdict(int)
         self._lock = threading.Lock()
+        self._baseline_weights: dict[Intent, Weights] = {
+            intent: Weights(
+                latency=weights.latency,
+                cost=weights.cost,
+                capability=weights.capability,
+                success=weights.success,
+            )
+            for intent, weights in self._policy._weights.items()
+        }
 
     def observe(
         self,
@@ -137,3 +146,16 @@ class WeightTuner:
                 samples=self._samples[intent],
                 net_credit=dict(self._credit[intent]),
             )
+
+    def reset(self, *, reset_policy_weights: bool = True) -> None:
+        with self._lock:
+            self._credit.clear()
+            self._samples.clear()
+            if reset_policy_weights:
+                for intent, baseline in self._baseline_weights.items():
+                    if intent in self._policy._weights:
+                        target = self._policy._weights[intent]
+                        target.latency = baseline.latency
+                        target.cost = baseline.cost
+                        target.capability = baseline.capability
+                        target.success = baseline.success

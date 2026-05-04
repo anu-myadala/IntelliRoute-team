@@ -17,6 +17,10 @@ from .accounting import CostAccountant
 
 log = get_logger("cost_tracker")
 accountant = CostAccountant()
+
+# Running event count since process start.  Not cleared by /reset so operators
+# can distinguish "reset just ran" from "no traffic has arrived".
+_total_events: int = 0
 app = FastAPI(title="IntelliRoute CostTracker")
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +37,8 @@ async def health() -> dict:
 
 @app.post("/events")
 async def record(event: CostEvent) -> dict:
+    global _total_events
+    _total_events += 1
     accountant.record(event)
     log_event(
         log,
@@ -69,6 +75,16 @@ class WorkflowBudget(BaseModel):
 class TeamPremiumCap(BaseModel):
     team_id: str
     premium_cap_usd: float
+
+
+class ResetPayload(BaseModel):
+    clear_budgets: bool = True
+
+
+@app.post("/reset")
+async def reset_state(payload: ResetPayload = ResetPayload()) -> dict:
+    accountant.reset(clear_budgets=payload.clear_budgets)
+    return {"ok": True, "cleared": "cost_tracker", "clear_budgets": payload.clear_budgets}
 
 
 @app.post("/budget")
@@ -158,3 +174,84 @@ async def check_budget(tenant_id: str, projected_cost_usd: float = 0.0) -> dict:
         "projected_cost_usd": projected_cost_usd,
         "would_exceed": accountant.would_exceed(tenant_id, projected_cost_usd),
     }
+
+
+@app.get("/history/{tenant_id}")
+async def event_history(
+    tenant_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """Return a paginated slice of raw cost events recorded for a tenant.
+
+    Events are ordered oldest-first so a caller can page forward through
+    history by incrementing ``offset`` by ``limit`` on each request.
+
+    Query parameters
+    ----------------
+    limit  : maximum events per page (default: 100, max enforced by the log cap)
+    offset : zero-based start index into the tenant's filtered event list
+    """
+    # Clamp limit to a sane upper bound to avoid accidentally large responses.
+    clamped_limit = min(limit, 500)
+    events = accountant.event_history(tenant_id, limit=clamped_limit, offset=offset)
+    total = accountant.total_event_count(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "offset": offset,
+        "limit": clamped_limit,
+        "total": total,
+        "count": len(events),
+        # Serialize each CostEvent as a plain dict for JSON transport.
+        "events": [e.model_dump() for e in events],
+    }
+
+
+class CostTrackerStats(BaseModel):
+    """Aggregate cost-tracker statistics returned by GET /stats."""
+
+    # Number of distinct tenants that have sent at least one cost event.
+    total_tenants: int
+
+    # Total POST /events calls received since process start (not reset by /reset).
+    total_events_received: int
+
+    # Platform-wide aggregates derived from in-memory rollups.
+    platform_total_requests: int
+    platform_total_cost_usd: float
+
+    # Budget governance counters.
+    active_tenant_budgets: int
+    active_team_budgets: int
+    active_workflow_budgets: int
+
+    # Number of budget-exceeded alerts that have fired since the last /reset.
+    triggered_alerts: int
+
+
+@app.get("/stats", response_model=CostTrackerStats)
+async def cost_stats() -> CostTrackerStats:
+    """Return aggregate cost and budget governance statistics."""
+    # Aggregate across all tenant rollups held in the accountant.
+    # We access the rollup dict directly since CostAccountant is in the same
+    # service process; no remote call is needed.
+    with accountant._lock:
+        total_tenants = len(accountant._rollups)
+        platform_requests = sum(r.total_requests for r in accountant._rollups.values())
+        platform_cost = round(
+            sum(r.total_cost_usd for r in accountant._rollups.values()), 6
+        )
+        active_tenant_budgets = len(accountant._budgets)
+        active_team_budgets = len(accountant._team_budgets)
+        active_workflow_budgets = len(accountant._workflow_budgets)
+        triggered_alerts = len(accountant._alerts)
+    return CostTrackerStats(
+        total_tenants=total_tenants,
+        total_events_received=_total_events,
+        platform_total_requests=platform_requests,
+        platform_total_cost_usd=platform_cost,
+        active_tenant_budgets=active_tenant_budgets,
+        active_team_budgets=active_team_budgets,
+        active_workflow_budgets=active_workflow_budgets,
+        triggered_alerts=triggered_alerts,
+    )

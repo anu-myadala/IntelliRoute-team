@@ -30,6 +30,8 @@ from pydantic import BaseModel
 
 from ..common.config import settings
 from ..common.logging import get_logger, log_event
+from ..common.mock_provider_catalog import list_mock_provider_infos_from_settings
+from ..common.provider_mode import build_bootstrap_result
 from ..common.models import (
 <<<<<<< HEAD
 =======
@@ -61,9 +63,15 @@ from .registry import ProviderRegistry
 from .feedback import CompletionOutcome, FeedbackCollector, compute_hallucination_signal
 from .brownout import BrownoutManager
 from .intent import classify
-from .policy import RoutingPolicy
+from .policy import RoutingPolicy, ScoredProvider
 from .policy_engine import PolicyEvaluator
 from .provider_clients import ProviderCallError, call_provider
+from .provider_daily_quota import (
+    QUOTA_EXHAUSTED_DETAIL,
+    apply_daily_quota_to_ranked,
+    daily_quota_limit,
+    daily_quota_tracker,
+)
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
 from .weight_tuner import WeightTuner
@@ -98,7 +106,24 @@ _worker_tasks: list[asyncio.Task] = []
 <<<<<<< HEAD
 =======
 _discovery_task: Optional[asyncio.Task] = None
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
+_routing_mode = os.environ.get("INTELLIROUTE_ROUTING_MODE", "intelliroute").strip().lower()
+_rr_cursor = 0
+
+
+def _get_routing_mode() -> str:
+    mode = (_routing_mode or "intelliroute").strip().lower()
+    if mode in {"intelliroute", "round_robin", "cheapest_first", "latency_first", "premium_first"}:
+        return mode
+    return "intelliroute"
+
+
+def _set_routing_mode(mode: str) -> str:
+    global _routing_mode
+    candidate = (mode or "intelliroute").strip().lower()
+    if candidate not in {"intelliroute", "round_robin", "cheapest_first", "latency_first", "premium_first"}:
+        raise ValueError(f"unsupported routing mode: {mode}")
+    _routing_mode = candidate
+    return _routing_mode
 
 
 @app.on_event("startup")
@@ -138,48 +163,16 @@ async def _shutdown() -> None:
     await asyncio.gather(*_worker_tasks, return_exceptions=True)
 
 
+def _mock_registration_mode() -> str:
+    """legacy = bootstrap only; hybrid = bootstrap + mock self-register/heartbeat; dynamic = self-register only."""
+    raw = os.environ.get("INTELLIROUTE_MOCK_REGISTRATION", "hybrid").strip().lower()
+    if raw in ("legacy", "hybrid", "dynamic"):
+        return raw
+    return "hybrid"
+
+
 def _mock_bootstrap() -> list[ProviderInfo]:
-    return [
-        ProviderInfo(
-            name="mock-fast",
-            url=f"http://{settings.host}:{settings.mock_fast_port}",
-            model="fast-1",
-            provider_type="mock",
-            capability={"interactive": 0.85, "reasoning": 0.45, "batch": 0.5, "code": 0.6},
-            cost_per_1k_tokens=0.002,
-            typical_latency_ms=120,
-<<<<<<< HEAD
-=======
-            capability_tier=2,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
-        ),
-        ProviderInfo(
-            name="mock-smart",
-            url=f"http://{settings.host}:{settings.mock_smart_port}",
-            model="smart-1",
-            provider_type="mock",
-            capability={"interactive": 0.7, "reasoning": 0.95, "batch": 0.8, "code": 0.9},
-            cost_per_1k_tokens=0.02,
-            typical_latency_ms=900,
-<<<<<<< HEAD
-=======
-            capability_tier=3,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
-        ),
-        ProviderInfo(
-            name="mock-cheap",
-            url=f"http://{settings.host}:{settings.mock_cheap_port}",
-            model="cheap-1",
-            provider_type="mock",
-            capability={"interactive": 0.55, "reasoning": 0.4, "batch": 0.75, "code": 0.45},
-            cost_per_1k_tokens=0.0003,
-            typical_latency_ms=600,
-<<<<<<< HEAD
-=======
-            capability_tier=1,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
-        ),
-    ]
+    return list_mock_provider_infos_from_settings(settings)
 
 
 def _external_bootstrap() -> list[ProviderInfo]:
@@ -223,13 +216,41 @@ def _bootstrap_registry() -> None:
     if os.environ.get("INTELLIROUTE_SKIP_BOOTSTRAP") == "1":
         return
     external = _external_bootstrap()
-    if external and not settings.use_mock_providers:
-        registry.bulk_register(external)
-        log_event(log, "bootstrap_registry", mode="external", providers=[p.name for p in external])
-        return
     mocks = _mock_bootstrap()
-    registry.bulk_register(mocks)
-    log_event(log, "bootstrap_registry", mode="mock", providers=[p.name for p in mocks])
+    mock_mode = _mock_registration_mode()
+    result = build_bootstrap_result(settings, external, mocks, mock_mode)
+
+    if result.external_only_no_keys:
+        log_event(
+            log,
+            "bootstrap_registry",
+            mode="external_only",
+            error="no GEMINI_API_KEY or GROQ_API_KEY; no providers registered",
+            providers=[],
+        )
+        return
+
+    if result.providers:
+        registry.bulk_register(result.providers)
+
+    if result.skipped_mock_bootstrap:
+        log_event(
+            log,
+            "bootstrap_registry",
+            mode=result.log_mode,
+            skipped_mock_bootstrap=True,
+            note="mocks must self-register",
+            providers=[p.name for p in result.providers],
+        )
+        return
+
+    if result.providers:
+        log_event(
+            log,
+            "bootstrap_registry",
+            mode=result.log_mode,
+            providers=[p.name for p in result.providers],
+        )
 
 
 @app.get("/health")
@@ -689,13 +710,8 @@ async def _execute_completion(
             intent=intent.value,
         )
 
-    ranked = policy.rank(
-        candidates,
-        health=health,
-        intent=intent,
-        latency_budget_ms=effective_req.latency_budget_ms,
-        confidence_hint=effective_req.confidence_hint,
-    )
+    routing_mode = _get_routing_mode()
+    ranked = _rank_candidates(routing_mode, candidates, health, intent, effective_req)
     if not ranked:
         _record_brownout_result(
             effective_req.tenant_id,
@@ -705,11 +721,27 @@ async def _execute_completion(
 >>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         raise HTTPException(status_code=503, detail="no providers registered")
 
+    _ranked_before_quota = ranked
+    ranked = apply_daily_quota_to_ranked(ranked, settings)
+    if not ranked:
+        _record_brownout_result(
+            effective_req.tenant_id,
+            latency_ms=(time.monotonic() - started) * 1000,
+            success=False,
+        )
+        log_event(
+            log,
+            "provider_daily_quota_all_exhausted",
+            candidates=[s.provider.name for s in _ranked_before_quota],
+        )
+        raise HTTPException(status_code=429, detail=QUOTA_EXHAUSTED_DETAIL)
+
     log_event(
         log,
         "route_decided",
         request_id=request_id,
         intent=intent.value,
+        routing_mode=routing_mode,
         primary=ranked[0].provider.name,
 <<<<<<< HEAD
 =======
@@ -771,6 +803,22 @@ async def _execute_completion(
         info = scored.provider
         local_attempt = _provider_attempts.get(info.name, 0) + 1
         _provider_attempts[info.name] = local_attempt
+
+        lim_q = daily_quota_limit(info.name, settings)
+        if lim_q is not None and daily_quota_tracker.usage(info.name) >= lim_q:
+            log_event(
+                log,
+                "provider_daily_quota_skip",
+                provider=info.name,
+                used=daily_quota_tracker.usage(info.name),
+                limit=lim_q,
+                reason="daily_quota_reached_mid_route",
+            )
+            last_error = f"daily_quota_exhausted:{info.name}"
+            fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            attempts += 1
+            continue
 
         # Per-provider retry budget. Keep at least one attempt per provider.
         if local_attempt > max(1, int(info.max_retries)):
@@ -920,7 +968,8 @@ async def _execute_completion(
             latency_ms=(time.monotonic() - started) * 1000,
             success=True,
         )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
+        if daily_quota_limit(info.name, settings) is not None:
+            daily_quota_tracker.record_successful_completion(info.name)
         return CompletionResponse(
             request_id=request_id,
             provider=info.name,
@@ -995,17 +1044,77 @@ async def _call_provider(
     except Exception as exc:
         log_event(log, "provider_call_error", provider=info.name, error=str(exc))
         return False, (time.monotonic() - start) * 1000, None, "unknown", 0, None, False
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
+
+
+def _rank_candidates(
+    mode: str,
+    candidates: list[ProviderInfo],
+    health: dict[str, ProviderHealth],
+    intent: Intent,
+    req: CompletionRequest,
+ ) -> list[ScoredProvider]:
+    global _rr_cursor
+
+    def _naive_scored(items: list[ProviderInfo]) -> list[ScoredProvider]:
+        n = max(1, len(items))
+        return [
+            ScoredProvider(
+                provider=p,
+                score=round(1.0 - (i / n), 6),
+                sub_scores={"latency": 0.0, "cost": 0.0, "capability": 0.0, "success": 0.0},
+            )
+            for i, p in enumerate(items)
+        ]
+
+    if mode == "round_robin":
+        if not candidates:
+            return []
+        ordered = sorted(candidates, key=lambda p: p.name)
+        start = _rr_cursor % len(ordered)
+        _rr_cursor += 1
+        rotated = ordered[start:] + ordered[:start]
+        return _naive_scored(rotated)
+    if mode == "cheapest_first":
+        ordered = sorted(candidates, key=lambda p: (p.cost_per_1k_tokens, p.name))
+        return _naive_scored(ordered)
+    if mode == "latency_first":
+        ordered = sorted(candidates, key=lambda p: (p.typical_latency_ms, p.name))
+        return _naive_scored(ordered)
+    if mode == "premium_first":
+        ordered = sorted(
+            candidates,
+            key=lambda p: (-p.capability_tier, p.typical_latency_ms, p.cost_per_1k_tokens, p.name),
+        )
+        return _naive_scored(ordered)
+    return policy.rank(
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=req.latency_budget_ms,
+        confidence_hint=req.confidence_hint,
+    )
 
 
 class RouteDecision(BaseModel):
     intent: str
     ranked: list[str]
     scores: dict[str, float]
-<<<<<<< HEAD
-=======
+    routing_mode: str = "intelliroute"
     policy_evaluation: Optional[PolicyEvaluationResult] = None
     brownout_status: Optional[BrownoutStatus] = None
+
+
+class RoutingModeBody(BaseModel):
+    mode: str
+
+
+class ResetPayload(BaseModel):
+    reset_feedback: bool = True
+    reset_brownout: bool = True
+    reset_queue: bool = True
+    reset_tuner: bool = True
+    reset_routing_mode: bool = True
+    reset_provider_daily_quotas: bool = True
 
 
 @app.get("/weights")
@@ -1023,6 +1132,51 @@ async def get_weights() -> dict:
             "tuner_net_credit": {k: round(v, 4) for k, v in snap.net_credit.items()},
         }
     return out
+
+
+@app.post("/reset")
+async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
+    global _rr_cursor
+    if body.reset_feedback:
+        feedback.reset()
+    if body.reset_brownout:
+        brownout_manager.reset()
+        for mgr in _tenant_brownout.values():
+            mgr.reset()
+        _tenant_brownout.clear()
+    if body.reset_queue:
+        request_queue.reset()
+    if body.reset_tuner:
+        weight_tuner.reset(reset_policy_weights=True)
+    if body.reset_routing_mode:
+        _set_routing_mode("intelliroute")
+    if body.reset_provider_daily_quotas:
+        daily_quota_tracker.clear()
+    _rr_cursor = 0
+    return {
+        "ok": True,
+        "cleared": "router_runtime_state",
+        "reset_feedback": body.reset_feedback,
+        "reset_brownout": body.reset_brownout,
+        "reset_queue": body.reset_queue,
+        "reset_tuner": body.reset_tuner,
+        "reset_routing_mode": body.reset_routing_mode,
+        "reset_provider_daily_quotas": body.reset_provider_daily_quotas,
+    }
+
+
+@app.get("/routing/mode")
+async def routing_mode_status() -> dict:
+    return {"mode": _get_routing_mode()}
+
+
+@app.post("/routing/mode")
+async def set_routing_mode(body: RoutingModeBody) -> dict:
+    try:
+        mode = _set_routing_mode(body.mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"mode": mode}
 
 
 @app.post("/weights/rebalance/{intent}")
@@ -1121,20 +1275,18 @@ async def brownout_status_for_tenant(tenant_id: str) -> BrownoutStatus:
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
     intent, health, candidates, pe, bs, _budget_ctx = await _prepare_routing(req)
-    ranked = policy.rank(
-        candidates,
-        health=health,
-        intent=intent,
-        latency_budget_ms=req.latency_budget_ms,
-        confidence_hint=req.confidence_hint,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
-    )
+    routing_mode = _get_routing_mode()
+    ranked = _rank_candidates(routing_mode, candidates, health, intent, req)
+    if ranked:
+        before_q = ranked
+        ranked = apply_daily_quota_to_ranked(ranked, settings)
+        if not ranked and before_q:
+            raise HTTPException(status_code=429, detail=QUOTA_EXHAUSTED_DETAIL)
     return RouteDecision(
         intent=intent.value,
         ranked=[s.provider.name for s in ranked],
         scores={s.provider.name: round(s.score, 4) for s in ranked},
-<<<<<<< HEAD
-=======
+        routing_mode=routing_mode,
         policy_evaluation=pe,
         brownout_status=BrownoutStatus(
             is_degraded=bs.is_degraded,

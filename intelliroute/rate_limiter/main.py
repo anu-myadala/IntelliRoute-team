@@ -55,6 +55,17 @@ _election: Optional[LeaderElection] = None
 _background_tasks: list[asyncio.Task] = []
 _replication_offset: int = 0
 
+# ---------------------------------------------------------------------------
+# Per-replica aggregate counters.
+# These reset on process restart and are not replicated to peers — they
+# reflect this instance's activity, not cluster-wide totals. That makes
+# them useful for per-pod dashboards and alert rules without requiring a
+# centralised metrics store.
+# ---------------------------------------------------------------------------
+_stats_total_checks: int = 0
+_stats_total_allowed: int = 0
+_stats_total_denied: int = 0
+
 
 def _setup_election() -> None:
     """Initialize leader election from environment variables."""
@@ -236,6 +247,9 @@ async def leader() -> dict:
 
 @app.post("/check", response_model=RateLimitResult)
 async def check(req: RateLimitCheck) -> RateLimitResult:
+    global _stats_total_checks, _stats_total_allowed, _stats_total_denied
+    # Count every check regardless of whether it is served locally or forwarded.
+    _stats_total_checks += 1
     forwarded = False
     if _election and not _election.is_leader:
         # Follower: forward to leader
@@ -290,11 +304,17 @@ async def check(req: RateLimitCheck) -> RateLimitResult:
                 leader_replica=leader_id,
             )
 
-    # Leader or follback: use local store
+    # Leader or fallback: use local store
     key = f"{req.tenant_id}|{req.provider}"
     allowed, remaining, retry_after = store.try_consume(
         key, amount=req.tokens_requested
     )
+    # Track allowed vs denied at the local consumption point only.
+    # Forwarded requests are already counted on the leader replica.
+    if allowed:
+        _stats_total_allowed += 1
+    else:
+        _stats_total_denied += 1
     log_event(
         log,
         "rate_limit_check",
@@ -359,6 +379,24 @@ class ProviderQuota(BaseModel):
     provider: str
     capacity: float
     refill_rate: float
+
+
+class ResetPayload(BaseModel):
+    clear_configs: bool = True
+    clear_log: bool = True
+
+
+@app.post("/reset")
+async def reset_state(payload: ResetPayload = ResetPayload()) -> dict:
+    global _replication_offset
+    store.reset(clear_configs=payload.clear_configs, clear_log=payload.clear_log)
+    _replication_offset = 0
+    return {
+        "ok": True,
+        "cleared": "rate_limiter",
+        "clear_configs": payload.clear_configs,
+        "clear_log": payload.clear_log,
+    }
 
 
 @app.post("/config/provider")
@@ -447,3 +485,63 @@ async def election_status() -> dict:
 @app.get("/log")
 async def replication_log() -> dict:
     return {"entries": store.replication_log()}
+
+
+class RateLimiterStats(BaseModel):
+    """Per-replica aggregate counters returned by GET /stats.
+
+    All counters reset when the process restarts — they are not persisted
+    or replicated. Use them for per-instance dashboards and alert rules.
+    """
+
+    # Number of unique (tenant_id, provider) pairs currently tracked in the
+    # in-memory bucket store.  Grows as new tenant/provider combinations are
+    # seen; shrinks after a reset.
+    active_buckets: int
+
+    # Running totals since the last process start.
+    total_checks: int
+    total_allowed: int
+    total_denied: int
+
+    # Fraction of locally-served checks that were denied (0.0 when no local
+    # checks have been recorded, e.g. on a forwarding-only follower).
+    deny_rate: float
+
+    # Length of the replication log on this replica; followers use this as
+    # their sync cursor to request only new entries.
+    replication_log_length: int
+
+    # Leader-election identity fields — useful for correlating stats across
+    # replicas without a separate call to /election/status.
+    replica_id: Optional[str]
+    current_leader: Optional[str]
+    is_leader: bool
+
+
+@app.get("/stats", response_model=RateLimiterStats)
+async def stats() -> RateLimiterStats:
+    """Return per-replica aggregate counters and cluster membership state."""
+    # Count distinct (tenant, provider) pairs seen by the bucket store.
+    active = len(store._buckets)
+    log_len = len(store.replication_log())
+    # Guard against division-by-zero when no local checks have been served.
+    deny_rate = (
+        round(_stats_total_denied / _stats_total_checks, 4)
+        if _stats_total_checks > 0
+        else 0.0
+    )
+    replica_id = _election._replica_id if _election else None
+    current_leader = _election.current_leader if _election else None
+    is_leader = _election.is_leader if _election else True
+    return RateLimiterStats(
+        active_buckets=active,
+        total_checks=_stats_total_checks,
+        total_allowed=_stats_total_allowed,
+        total_denied=_stats_total_denied,
+        deny_rate=deny_rate,
+        replication_log_length=log_len,
+        replica_id=replica_id,
+        current_leader=current_leader,
+        is_leader=is_leader,
+    )

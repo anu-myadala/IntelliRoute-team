@@ -7,7 +7,7 @@ without any configuration files.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .env import load_dotenv_if_present
 
@@ -37,6 +37,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in TRUTHY
 
 
+def _env_provider_mode() -> str:
+    """``auto`` | ``mock_only`` | ``external_only`` | ``hybrid`` (invalid → ``auto``)."""
+    raw = os.environ.get("INTELLIROUTE_PROVIDER_MODE", "auto")
+    m = raw.strip().lower()
+    if m in ("auto", "mock_only", "external_only", "hybrid"):
+        return m
+    return "auto"
+
+
 @dataclass
 class Settings:
     gateway_port: int = _env_int("INTELLIROUTE_GATEWAY_PORT", 8000)
@@ -57,6 +66,27 @@ class Settings:
     groq_model: str = os.environ.get("INTELLIROUTE_GROQ_MODEL", "llama-3.3-70b-versatile")
     provider_timeout_s: float = _env_float("INTELLIROUTE_PROVIDER_TIMEOUT_S", 30.0)
     use_mock_providers: bool = _env_bool("INTELLIROUTE_USE_MOCKS", False)
+    provider_mode: str = field(default_factory=_env_provider_mode)
+
+    # Per-provider UTC daily request caps (successful completions). Opt-in.
+    enable_provider_daily_quotas: bool = _env_bool(
+        "INTELLIROUTE_ENABLE_PROVIDER_DAILY_QUOTAS", False
+    )
+    gemini_daily_request_quota: int = _env_int("INTELLIROUTE_GEMINI_DAILY_REQUEST_QUOTA", 15)
+    groq_daily_request_quota: int = _env_int("INTELLIROUTE_GROQ_DAILY_REQUEST_QUOTA", 700)
+    mock_fast_daily_request_quota: int = _env_int(
+        "INTELLIROUTE_MOCK_FAST_DAILY_REQUEST_QUOTA", 2000
+    )
+    mock_cheap_daily_request_quota: int = _env_int(
+        "INTELLIROUTE_MOCK_CHEAP_DAILY_REQUEST_QUOTA", 3000
+    )
+    mock_smart_daily_request_quota: int = _env_int(
+        "INTELLIROUTE_MOCK_SMART_DAILY_REQUEST_QUOTA", 1000
+    )
+    mock_fault_daily_request_quota: int = _env_int(
+        "INTELLIROUTE_MOCK_FAULT_DAILY_REQUEST_QUOTA", 500
+    )
+    provider_quota_warn_ratio: float = _env_float("INTELLIROUTE_PROVIDER_QUOTA_WARN_RATIO", 0.7)
 
     @property
     def router_url(self) -> str:
