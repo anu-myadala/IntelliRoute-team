@@ -801,6 +801,10 @@
                         <option value="code">Code (Specialized)</option>
                     </select>
                 </div>
+                <div class="intent-selector">
+                    <input type="text" id="teamIdInput" placeholder="team_id (optional)" value="team-alpha" />
+                    <input type="text" id="workflowIdInput" placeholder="workflow_id (optional)" value="nightly-batch" />
+                </div>
 
                 <div class="input-group">
                     <input type="text" id="messageInput" placeholder="Ask me anything..." />
@@ -842,6 +846,9 @@
                     </div>
                     <div class="flow-arrow"></div>
                 </div>
+                <div id="brownoutBanner" style="margin-top:6px;padding:4px 8px;border-radius:6px;font-size:11px;color:var(--text-secondary);background:rgba(210,153,34,0.08);border:1px solid rgba(210,153,34,0.25);display:none;">
+                    Brownout mode active
+                </div>
 
                 <div class="provider-ranking" id="providerRanking"></div>
             </div>
@@ -849,6 +856,7 @@
             <div style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
                 <div class="section-title">🏥 Provider Health</div>
                 <div class="provider-health" id="providerHealth"></div>
+                <div id="registryStaleHint" style="font-size:11px;color:var(--text-secondary);padding:4px 8px 8px;min-height:16px;"></div>
             </div>
 
             <div style="flex: 0 0 auto;">
@@ -870,6 +878,7 @@
                 <div class="section-title">💰 Cost Tracker</div>
                 <div class="metric-card">
                     <div class="cost-bars" id="costBars"></div>
+                    <div id="scopeBudgetInfo" style="font-size:11px;color:var(--text-secondary);margin-top:8px;"></div>
                     <div class="cost-total">
                         <div class="cost-total-label">Total Spend</div>
                         <div class="cost-total-value" id="totalCost">$0.00</div>
@@ -951,6 +960,8 @@
             if (!content) return;
 
             const intent = document.getElementById('intentSelect').value;
+            const teamId = document.getElementById('teamIdInput').value.trim();
+            const workflowId = document.getElementById('workflowIdInput').value.trim();
 
             // Add user message
             addMessage('user', content);
@@ -972,6 +983,8 @@
                     },
                     body: JSON.stringify({
                         intent_hint: intent || undefined,
+                        team_id: teamId || undefined,
+                        workflow_id: workflowId || undefined,
                         messages: [{ role: 'user', content }]
                     })
                 });
@@ -986,10 +999,19 @@
                 addMessage('assistant', data.content, {
                     provider: data.provider,
                     latency: data.latency_ms,
-                    attempts: data.fallback_used ? '2+' : '1'
+                    attempts: data.fallback_used ? '2+' : '1',
+                    policyEvaluation: data.policy_evaluation || null
                 });
 
-                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})`);
+                const pe = data.policy_evaluation;
+                const bo = data.brownout_status;
+                const policyLine = pe && (pe.matched_rules || []).length
+                    ? `Policy: ${(pe.matched_rules || []).join(', ')}${pe.downgrade_reason ? ' — ' + pe.downgrade_reason : ''}`
+                    : '';
+                const brownoutLine = bo && bo.is_degraded
+                    ? `Brownout: ${bo.reason} (q=${bo.queue_depth}, p95=${Math.round(bo.p95_latency_ms || 0)}ms)`
+                    : '';
+                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${policyLine ? ' | ' + policyLine : ''}${brownoutLine ? ' | ' + brownoutLine : ''}`);
                 highlightProvider(data.provider);
 
             } catch (error) {
@@ -1046,6 +1068,11 @@
             if (meta.attempts) {
                 metaHtml += `<span class="meta-badge">🔄 ${escapeHtml(String(meta.attempts))} attempt(s)</span>`;
             }
+            if (meta.policyEvaluation && (meta.policyEvaluation.matched_rules || []).length) {
+                const pr = meta.policyEvaluation.matched_rules.join(', ');
+                const cx = typeof meta.policyEvaluation.complexity_score === 'number' ? meta.policyEvaluation.complexity_score : '';
+                metaHtml += `<span class="meta-badge" title="${escapeHtml(JSON.stringify(meta.policyEvaluation))}">📜 ${escapeHtml(pr)}${cx !== '' ? ' · cx=' + escapeHtml(String(cx)) : ''}</span>`;
+            }
 
             div.innerHTML = `
                 <div>${escapeHtml(content)}</div>
@@ -1099,6 +1126,10 @@
                     <div class="health-metric">
                         <span>Anomaly:</span>
                         <span class="metric-value" id="anomaly-${p}">0.0</span>
+                    </div>
+                    <div class="health-metric">
+                        <span>Quality:</span>
+                        <span class="metric-value" id="quality-${p}">0.00</span>
                     </div>
                 </div>
             `).join('');
@@ -1199,6 +1230,38 @@
                 }
             } catch (e) { /* health monitor not yet up */ }
 
+            // 1b. Discovery / heartbeat stale hint
+            try {
+                const rr = await fetch(`${ROUTER_API}/providers/registry`);
+                if (rr.ok) {
+                    const jr = await rr.json();
+                    const hint = document.getElementById('registryStaleHint');
+                    if (hint) {
+                        const stale = jr.stale_names || [];
+                        hint.textContent = stale.length
+                            ? `Discovery: ${jr.providers_active}/${jr.providers_total} routable — stale: ${stale.join(', ')}`
+                            : `Discovery: ${jr.providers_active}/${jr.providers_total} routable`;
+                    }
+                }
+            } catch (e) { /* optional */ }
+
+            // 1c. Brownout status
+            try {
+                const br = await fetch(`${ROUTER_API}/brownout`);
+                if (br.ok) {
+                    const b = await br.json();
+                    const banner = document.getElementById('brownoutBanner');
+                    if (banner) {
+                        if (b.is_degraded) {
+                            banner.style.display = 'block';
+                            banner.textContent = `Brownout active · reason=${b.reason} · queue=${b.queue_depth} · p95=${Math.round(b.p95_latency_ms)}ms`;
+                        } else {
+                            banner.style.display = 'none';
+                        }
+                    }
+                }
+            } catch (e) { /* optional */ }
+
             // 2. Fetch feedback metrics (EMA latency, success, anomaly)
             try {
                 const r = await fetch(`${ROUTER_API}/feedback`);
@@ -1210,6 +1273,8 @@
                             document.getElementById(`latency-${p}`).textContent = Math.round(m.latency_ema) + 'ms';
                             document.getElementById(`success-${p}`).textContent = Math.round(m.success_rate_ema * 100) + '%';
                             document.getElementById(`anomaly-${p}`).textContent = m.anomaly_score.toFixed(2);
+                            const q = (typeof m.quality_score === 'number') ? m.quality_score : 1.0;
+                            document.getElementById(`quality-${p}`).textContent = q.toFixed(2);
                         }
                     });
                 }
@@ -1251,6 +1316,45 @@
                     const totalCost = cost.total_cost_usd || Object.values(state.costs).reduce((a, b) => a + b, 0);
                     document.getElementById('totalCost').textContent = '$' + totalCost.toFixed(4);
                 }
+            } catch (e) {}
+
+            // 4b. Team/workflow rollups and budget pressure
+            try {
+                const teamId = document.getElementById('teamIdInput').value.trim();
+                const workflowId = document.getElementById('workflowIdInput').value.trim();
+                const info = [];
+                if (teamId) {
+                    const tr = await fetch(`${COST_API}/summary/team/${encodeURIComponent(teamId)}`);
+                    if (tr.ok) {
+                        const t = await tr.json();
+                        info.push(`team ${teamId}: $${(t.total_cost_usd || 0).toFixed(4)} (${t.total_requests || 0} req)`);
+                    }
+                    const tb = await fetch(`${COST_API}/budget/team/${encodeURIComponent(teamId)}`);
+                    if (tb.ok) {
+                        const b = await tb.json();
+                        if (b.budget_usd != null) {
+                            const util = b.utilization != null ? (b.utilization * 100).toFixed(1) + '%' : 'n/a';
+                            info.push(`team budget: $${Number(b.budget_usd).toFixed(2)} util=${util} premium_cap_hit=${b.premium_cap_hit ? 'yes' : 'no'}`);
+                        }
+                    }
+                }
+                if (workflowId) {
+                    const wr = await fetch(`${COST_API}/summary/workflow/${encodeURIComponent(workflowId)}`);
+                    if (wr.ok) {
+                        const w = await wr.json();
+                        info.push(`workflow ${workflowId}: $${(w.total_cost_usd || 0).toFixed(4)} (${w.total_requests || 0} req)`);
+                    }
+                    const wb = await fetch(`${COST_API}/budget/workflow/${encodeURIComponent(workflowId)}`);
+                    if (wb.ok) {
+                        const b = await wb.json();
+                        if (b.budget_usd != null) {
+                            const util = b.utilization != null ? (b.utilization * 100).toFixed(1) + '%' : 'n/a';
+                            info.push(`workflow budget: $${Number(b.budget_usd).toFixed(2)} util=${util} pressure=${b.budget_pressure ? 'yes' : 'no'}`);
+                        }
+                    }
+                }
+                const scopeInfo = document.getElementById('scopeBudgetInfo');
+                scopeInfo.textContent = info.join(' | ');
             } catch (e) {}
 
             // 5. Fetch leader election status from all replicas

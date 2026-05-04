@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import time
 
-from intelliroute.router.feedback import CompletionOutcome, FeedbackCollector
+from intelliroute.router.feedback import (
+    CompletionOutcome,
+    FeedbackCollector,
+    compute_hallucination_signal,
+)
 
 
 def test_feedback_initialization():
@@ -133,6 +137,60 @@ def test_get_metrics_returns_copy():
     assert m1 is not m2
 
 
+def test_hallucination_signal_healthy_response():
+    score = compute_hallucination_signal(
+        "The capital of France is Paris.", prompt_char_count=30
+    )
+    assert score == 0.0
+
+
+def test_hallucination_signal_empty_response():
+    assert compute_hallucination_signal("", prompt_char_count=80) == 1.0
+    assert compute_hallucination_signal(None, prompt_char_count=80) == 1.0
+
+
+def test_hallucination_signal_too_short_for_long_prompt():
+    score = compute_hallucination_signal("ok", prompt_char_count=200)
+    assert 0.0 < score <= 1.0
+
+
+def test_hallucination_signal_refusal_pattern():
+    score = compute_hallucination_signal(
+        "I cannot help with that request.", prompt_char_count=50
+    )
+    assert score >= 0.5
+
+
+def test_hallucination_signal_invalid_json_when_expected():
+    score = compute_hallucination_signal(
+        "definitely not json", prompt_char_count=50, expects_json=True
+    )
+    assert score >= 0.6
+
+
+def test_hallucination_signal_valid_json_when_expected():
+    score = compute_hallucination_signal(
+        '{"answer": 42}', prompt_char_count=50, expects_json=True
+    )
+    assert score == 0.0
+
+
+def test_hallucination_signal_blends_into_anomaly_ema():
+    fc = FeedbackCollector(alpha=1.0)  # full weight on the new sample
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,  # latency-anomaly = 0
+            success=True,
+            hallucination_signal=0.8,
+        )
+    )
+    metrics = fc.get_metrics("p1")
+    # Anomaly EMA should reflect the hallucination signal even when latency
+    # itself is fine.
+    assert metrics.anomaly_score >= 0.7
+
+
 def test_all_metrics_returns_snapshot():
     """Test that all_metrics returns a snapshot of all providers."""
     fc = FeedbackCollector()
@@ -143,3 +201,64 @@ def test_all_metrics_returns_snapshot():
     assert len(all_m) == 2
     assert "p1" in all_m
     assert "p2" in all_m
+
+
+def test_quality_score_is_bounded_between_zero_and_one():
+    fc = FeedbackCollector(alpha=1.0)
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=False,
+            hallucination_signal=1.0,
+        )
+    )
+    metrics = fc.get_metrics("p1")
+    assert metrics is not None
+    assert 0.0 <= metrics.quality_score <= 1.0
+
+
+def test_quality_score_drops_when_anomaly_rises():
+    fc = FeedbackCollector(alpha=1.0)
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=True,
+            hallucination_signal=0.0,
+        )
+    )
+    high_quality = fc.get_metrics("p1").quality_score
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=True,
+            hallucination_signal=1.0,
+        )
+    )
+    low_quality = fc.get_metrics("p1").quality_score
+    assert low_quality < high_quality
+
+
+def test_quality_score_rises_with_success_signal():
+    fc = FeedbackCollector(alpha=1.0)
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=False,
+            hallucination_signal=0.0,
+        )
+    )
+    low_quality = fc.get_metrics("p1").quality_score
+    fc.record(
+        CompletionOutcome(
+            provider="p1",
+            latency_ms=100.0,
+            success=True,
+            hallucination_signal=0.0,
+        )
+    )
+    high_quality = fc.get_metrics("p1").quality_score
+    assert high_quality > low_quality

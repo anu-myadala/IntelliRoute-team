@@ -15,6 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+<<<<<<< HEAD
+=======
+import random
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 import time
 import uuid
 from typing import Optional
@@ -27,10 +31,15 @@ from pydantic import BaseModel
 from ..common.config import settings
 from ..common.logging import get_logger, log_event
 from ..common.models import (
+<<<<<<< HEAD
+=======
+    BrownoutStatus,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     CompletionRequest,
     CompletionResponse,
     CostEvent,
     Intent,
+<<<<<<< HEAD
     ProviderHealth,
     ProviderInfo,
     RateLimitCheck,
@@ -41,13 +50,39 @@ from .policy import RoutingPolicy
 from .provider_clients import ProviderCallError, call_provider
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
+=======
+    PolicyEvaluationResult,
+    ProviderHealth,
+    ProviderHeartbeatRequest,
+    ProviderInfo,
+    ProviderRegisterRequest,
+    RateLimitCheck,
+)
+from .feedback import CompletionOutcome, FeedbackCollector, compute_hallucination_signal
+from .brownout import BrownoutManager
+from .intent import classify
+from .policy import RoutingPolicy
+from .policy_engine import PolicyEvaluator
+from .provider_clients import ProviderCallError, call_provider
+from .queue import INTENT_PRIORITY, Priority, RequestQueue
+from .registry import ProviderRegistry
+from .weight_tuner import WeightTuner
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 log = get_logger("router")
 
 registry = ProviderRegistry()
 feedback = FeedbackCollector()
 policy = RoutingPolicy(feedback=feedback)
+<<<<<<< HEAD
 request_queue = RequestQueue()
+=======
+policy_evaluator = PolicyEvaluator()
+request_queue = RequestQueue()
+brownout_manager = BrownoutManager()
+_tenant_brownout: dict[str, BrownoutManager] = {}
+weight_tuner = WeightTuner(policy)
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 app = FastAPI(title="IntelliRoute Router")
 app.add_middleware(
@@ -60,6 +95,10 @@ app.add_middleware(
 _http: Optional[httpx.AsyncClient] = None
 _WORKER_COUNT = 4
 _worker_tasks: list[asyncio.Task] = []
+<<<<<<< HEAD
+=======
+_discovery_task: Optional[asyncio.Task] = None
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @app.on_event("startup")
@@ -72,11 +111,24 @@ async def _startup() -> None:
     for i in range(_WORKER_COUNT):
         task = asyncio.create_task(_queue_worker(i))
         _worker_tasks.append(task)
+<<<<<<< HEAD
+=======
+    global _discovery_task
+    _discovery_task = asyncio.create_task(_discovery_sweep_loop())
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+<<<<<<< HEAD
     global _worker_tasks
+=======
+    global _worker_tasks, _discovery_task
+    if _discovery_task is not None:
+        _discovery_task.cancel()
+        await asyncio.gather(_discovery_task, return_exceptions=True)
+        _discovery_task = None
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     if _http is not None:
         await _http.aclose()
     # Cancel worker tasks
@@ -96,6 +148,10 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.85, "reasoning": 0.45, "batch": 0.5, "code": 0.6},
             cost_per_1k_tokens=0.002,
             typical_latency_ms=120,
+<<<<<<< HEAD
+=======
+            capability_tier=2,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         ),
         ProviderInfo(
             name="mock-smart",
@@ -105,6 +161,10 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.7, "reasoning": 0.95, "batch": 0.8, "code": 0.9},
             cost_per_1k_tokens=0.02,
             typical_latency_ms=900,
+<<<<<<< HEAD
+=======
+            capability_tier=3,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         ),
         ProviderInfo(
             name="mock-cheap",
@@ -114,6 +174,10 @@ def _mock_bootstrap() -> list[ProviderInfo]:
             capability={"interactive": 0.55, "reasoning": 0.4, "batch": 0.75, "code": 0.45},
             cost_per_1k_tokens=0.0003,
             typical_latency_ms=600,
+<<<<<<< HEAD
+=======
+            capability_tier=1,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         ),
     ]
 
@@ -130,6 +194,10 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.93, "reasoning": 0.76, "batch": 0.88, "code": 0.74},
                 cost_per_1k_tokens=0.0007,
                 typical_latency_ms=500,
+<<<<<<< HEAD
+=======
+                capability_tier=2,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             )
         )
     if settings.gemini_api_key:
@@ -142,6 +210,10 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.72, "reasoning": 0.97, "batch": 0.68, "code": 0.91},
                 cost_per_1k_tokens=0.0035,
                 typical_latency_ms=1200,
+<<<<<<< HEAD
+=======
+                capability_tier=3,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             )
         )
     return providers
@@ -162,11 +234,24 @@ def _bootstrap_registry() -> None:
 
 @app.get("/health")
 async def health() -> dict:
+<<<<<<< HEAD
     return {"status": "healthy", "providers": len(registry.all())}
+=======
+    now = time.time()
+    active = len(registry.all_active(now))
+    total = len(registry.all_entries())
+    return {
+        "status": "healthy",
+        "providers": active,
+        "providers_active": active,
+        "providers_total": total,
+    }
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @app.post("/providers")
 async def register_provider(p: ProviderInfo) -> dict:
+<<<<<<< HEAD
     registry.register(p)
     return {"registered": p.name}
 
@@ -174,12 +259,94 @@ async def register_provider(p: ProviderInfo) -> dict:
 @app.delete("/providers/{name}")
 async def deregister_provider(name: str) -> dict:
     registry.deregister(name)
+=======
+    registry.register_bootstrap(p)
+    log_event(
+        log,
+        "provider_registered",
+        mode="bootstrap",
+        name=p.name,
+        provider_id=p.name,
+    )
+    return {"registered": p.name}
+
+
+@app.post("/providers/register")
+async def register_provider_dynamic(req: ProviderRegisterRequest) -> dict:
+    registry.register_api(req)
+    pid = (req.provider_id or req.provider.name).strip()
+    log_event(
+        log,
+        "provider_registered",
+        mode="api",
+        name=req.provider.name,
+        provider_id=pid,
+        lease_ttl_seconds=req.lease_ttl_seconds,
+        source=req.registration_source,
+    )
+    return {"registered": req.provider.name, "provider_id": pid}
+
+
+@app.post("/providers/heartbeat")
+async def provider_heartbeat(req: ProviderHeartbeatRequest) -> dict:
+    ok = registry.heartbeat(req.provider_id.strip())
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail="unknown provider_id or provider does not use heartbeats",
+        )
+    log_event(log, "provider_heartbeat", provider_id=req.provider_id.strip())
+    return {"ok": True, "provider_id": req.provider_id.strip()}
+
+
+@app.get("/providers/registry")
+async def providers_registry() -> dict:
+    """Debug / observability: all rows including stale (TTL expired) providers.
+
+    Declared before ``/providers/{{name}}`` so ``registry`` is not captured as a name.
+    """
+    now = time.time()
+    stale = registry.stale_names(now)
+    return {
+        "providers": registry.discovery_snapshot(now),
+        "providers_active": len(registry.all_active(now)),
+        "providers_total": len(registry.all_entries()),
+        "stale_names": stale,
+    }
+
+
+@app.delete("/providers/{name}")
+async def deregister_provider(name: str) -> dict:
+    registry.deregister(name)
+    log_event(log, "provider_deregistered", name=name)
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     return {"deregistered": name}
 
 
 @app.get("/providers")
 async def list_providers() -> list[ProviderInfo]:
+<<<<<<< HEAD
     return registry.all()
+=======
+    """Routable providers only (same set used before ranking)."""
+    return registry.all_active(time.time())
+
+
+async def _discovery_sweep_loop() -> None:
+    """Periodic observability for providers whose heartbeat lease has lapsed."""
+    interval = float(os.environ.get("INTELLIROUTE_DISCOVERY_SWEEP_S", "15"))
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            now = time.time()
+            stale = registry.stale_names(now)
+            if stale:
+                log_event(log, "provider_heartbeat_expired", providers=stale)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            log_event(log, "discovery_sweep_error", error=str(exc))
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 async def _fetch_health_snapshot() -> dict[str, ProviderHealth]:
@@ -221,6 +388,52 @@ async def _report_health(provider: str, success: bool, latency_ms: float) -> Non
         pass
 
 
+<<<<<<< HEAD
+=======
+def _sla_backoff_ms(provider: ProviderInfo, intent: Intent, attempt: int) -> float:
+    """Jittered exponential backoff bounded by the provider's declared SLA.
+
+    The backoff floor doubles on each retry but is capped at one tenth of the
+    provider's per-intent SLA so a slow provider with a 10s SLA cannot stall
+    the fallback loop for a request whose budget is much tighter.
+    """
+    base_ms = 20.0 * (2 ** max(0, attempt - 1))
+    sla_ms = provider.sla_p95_latency_ms.get(intent.value, 0.0)
+    cap_ms = max(50.0, sla_ms / 10.0) if sla_ms > 0 else 200.0
+    bounded = min(base_ms, cap_ms)
+    return bounded * (1.0 + random.random() * 0.25)
+
+
+def _provider_timeout_s(provider: ProviderInfo, intent: Intent) -> float:
+    """Per-provider timeout policy derived from declared SLA and defaults."""
+    sla_ms = provider.sla_p95_latency_ms.get(intent.value, 0.0)
+    if sla_ms <= 0:
+        return settings.provider_timeout_s
+    # Allow modest headroom over declared p95 while staying bounded.
+    derived = max(0.5, (sla_ms / 1000.0) * 1.5)
+    return min(settings.provider_timeout_s, derived)
+
+
+def _error_backoff_ms(
+    provider: ProviderInfo,
+    intent: Intent,
+    local_attempt: int,
+    error_kind: str | None,
+    retry_after_ms: int = 0,
+) -> float:
+    base = _sla_backoff_ms(provider, intent, local_attempt)
+    if error_kind == "rate_limited":
+        return max(base, float(retry_after_ms or 0))
+    if error_kind == "timeout":
+        return base * 1.5
+    if error_kind == "server_error":
+        return base * 1.2
+    if error_kind == "transport_error":
+        return base * 1.1
+    return base
+
+
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 async def _publish_cost(event: CostEvent) -> None:
     assert _http is not None
     try:
@@ -231,6 +444,182 @@ async def _publish_cost(event: CostEvent) -> None:
         pass
 
 
+<<<<<<< HEAD
+=======
+async def _fetch_budget_context(req: CompletionRequest) -> dict:
+    """Return tenant/team/workflow budget context. Fail-open on errors."""
+    assert _http is not None
+    tenant_spent = 0.0
+    try:
+        r = await _http.get(f"{settings.cost_tracker_url}/summary/{req.tenant_id}")
+        if r.status_code == 200:
+            tenant_spent = float(r.json().get("total_cost_usd", 0.0))
+    except Exception:
+        pass
+    tenant_budget: float | None = None
+    try:
+        r = await _http.get(f"{settings.cost_tracker_url}/budget/{req.tenant_id}")
+        if r.status_code == 200:
+            raw = r.json().get("budget_usd")
+            if raw is not None:
+                tenant_budget = float(raw)
+    except Exception:
+        pass
+    team_spent = 0.0
+    team_budget = None
+    team_premium_spend = 0.0
+    team_premium_cap = None
+    if req.team_id:
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/summary/team/{req.team_id}")
+            if r.status_code == 200:
+                team_spent = float(r.json().get("total_cost_usd", 0.0))
+        except Exception:
+            pass
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/budget/team/{req.team_id}")
+            if r.status_code == 200:
+                body = r.json()
+                team_budget = body.get("budget_usd")
+                if team_budget is not None:
+                    team_budget = float(team_budget)
+                team_premium_spend = float(body.get("premium_spend_usd", 0.0))
+                cap = body.get("premium_cap_usd")
+                if cap is not None:
+                    team_premium_cap = float(cap)
+        except Exception:
+            pass
+    workflow_spent = 0.0
+    workflow_budget = None
+    if req.workflow_id:
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/summary/workflow/{req.workflow_id}")
+            if r.status_code == 200:
+                workflow_spent = float(r.json().get("total_cost_usd", 0.0))
+        except Exception:
+            pass
+        try:
+            r = await _http.get(f"{settings.cost_tracker_url}/budget/workflow/{req.workflow_id}")
+            if r.status_code == 200:
+                b = r.json().get("budget_usd")
+                if b is not None:
+                    workflow_budget = float(b)
+        except Exception:
+            pass
+    return {
+        "tenant_budget_usd": tenant_budget,
+        "tenant_spent_usd": tenant_spent,
+        "team_budget_usd": team_budget,
+        "team_spent_usd": team_spent,
+        "workflow_budget_usd": workflow_budget,
+        "workflow_spent_usd": workflow_spent,
+        "team_premium_cap_usd": team_premium_cap,
+        "team_premium_spend_usd": team_premium_spend,
+    }
+
+
+def _tenant_key(tenant_id: str) -> str:
+    return tenant_id.strip() or "__anonymous__"
+
+
+def _tenant_brownout_manager(tenant_id: str) -> BrownoutManager:
+    key = _tenant_key(tenant_id)
+    mgr = _tenant_brownout.get(key)
+    if mgr is None:
+        mgr = BrownoutManager(config=brownout_manager.config)
+        _tenant_brownout[key] = mgr
+    return mgr
+
+
+def _record_brownout_result(
+    tenant_id: str, *, latency_ms: float, success: bool, timed_out: bool = False
+) -> None:
+    brownout_manager.record_request_result(
+        latency_ms=latency_ms, success=success, timed_out=timed_out
+    )
+    _tenant_brownout_manager(tenant_id).record_request_result(
+        latency_ms=latency_ms, success=success, timed_out=timed_out
+    )
+
+
+async def _prepare_routing(
+    req: CompletionRequest,
+) -> tuple[
+    Intent,
+    dict[str, ProviderHealth],
+    list[ProviderInfo],
+    PolicyEvaluationResult | None,
+    BrownoutStatus,
+    dict,
+]:
+    intent = classify(req)
+    health = await _fetch_health_snapshot()
+    now = time.time()
+    all_providers = registry.all_active(now)
+    queue_stats = request_queue.stats()
+    global_bs, transitioned = brownout_manager.evaluate(queue_stats.total_depth)
+    tenant_mgr = _tenant_brownout_manager(req.tenant_id)
+    tenant_bs, tenant_transitioned = tenant_mgr.evaluate(queue_stats.total_depth)
+    if transitioned:
+        log_event(
+            log,
+            "brownout_transition",
+            scope="global",
+            is_degraded=global_bs.is_degraded,
+            reason=global_bs.reason,
+            queue_depth=global_bs.queue_depth,
+            p95_latency_ms=global_bs.p95_latency_ms,
+            error_rate=global_bs.error_rate,
+            timeout_rate=global_bs.timeout_rate,
+        )
+    if tenant_transitioned:
+        log_event(
+            log,
+            "brownout_transition",
+            scope=f"tenant:{_tenant_key(req.tenant_id)}",
+            is_degraded=tenant_bs.is_degraded,
+            reason=tenant_bs.reason,
+            queue_depth=tenant_bs.queue_depth,
+            p95_latency_ms=tenant_bs.p95_latency_ms,
+            error_rate=tenant_bs.error_rate,
+            timeout_rate=tenant_bs.timeout_rate,
+        )
+    effective_bs = tenant_bs if tenant_bs.is_degraded else global_bs
+    bs_model = BrownoutStatus(
+        is_degraded=effective_bs.is_degraded,
+        reason=effective_bs.reason,
+        entered_at_unix=effective_bs.entered_at_unix,
+        queue_depth=effective_bs.queue_depth,
+        p95_latency_ms=effective_bs.p95_latency_ms,
+        error_rate=effective_bs.error_rate,
+        timeout_rate=effective_bs.timeout_rate,
+    )
+    budget_ctx = await _fetch_budget_context(req)
+    candidates, policy_result = policy_evaluator.evaluate(
+        all_providers,
+        intent,
+        req,
+        tenant_budget_usd=budget_ctx["tenant_budget_usd"],
+        tenant_spent_usd=budget_ctx["tenant_spent_usd"],
+        team_id=req.team_id,
+        workflow_id=req.workflow_id,
+        team_budget_usd=budget_ctx["team_budget_usd"],
+        team_spent_usd=budget_ctx["team_spent_usd"],
+        workflow_budget_usd=budget_ctx["workflow_budget_usd"],
+        workflow_spent_usd=budget_ctx["workflow_spent_usd"],
+        team_premium_cap_usd=budget_ctx["team_premium_cap_usd"],
+        team_premium_spend_usd=budget_ctx["team_premium_spend_usd"],
+        brownout_status=bs_model,
+        brownout_max_latency_ms=brownout_manager.config.low_latency_max_ms,
+        brownout_block_premium=brownout_manager.config.block_premium_for_medium_and_low,
+        brownout_prefer_low_latency=brownout_manager.config.prefer_low_latency_for_medium_and_low,
+    )
+    if not policy_evaluator._config.enabled:
+        return intent, health, list(all_providers), None, bs_model, budget_ctx
+    return intent, health, candidates, policy_result, bs_model, budget_ctx
+
+
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 async def _queue_worker(worker_id: int) -> None:
     """Worker coroutine that processes queued requests."""
     while True:
@@ -271,12 +660,49 @@ async def _execute_completion(
     request_id: str, req: CompletionRequest
 ) -> CompletionResponse:
     """Core completion logic: ranking, provider tries, and feedback recording."""
+<<<<<<< HEAD
     intent = classify(req)
     health = await _fetch_health_snapshot()
     ranked = policy.rank(
         registry.all(), health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
     )
     if not ranked:
+=======
+    started = time.monotonic()
+    intent, health, candidates, pe, bs, budget_ctx = await _prepare_routing(req)
+    effective_req = req
+    if (
+        bs.is_degraded
+        and brownout_manager.config.reduce_max_tokens_for_medium_and_low
+        and intent in {Intent.REASONING, Intent.BATCH}
+        and req.max_tokens > brownout_manager.config.degraded_max_tokens
+    ):
+        effective_req = req.model_copy(
+            update={"max_tokens": brownout_manager.config.degraded_max_tokens}
+        )
+        log_event(
+            log,
+            "brownout_max_tokens_clamped",
+            request_id=request_id,
+            old_max_tokens=req.max_tokens,
+            new_max_tokens=effective_req.max_tokens,
+            intent=intent.value,
+        )
+
+    ranked = policy.rank(
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=effective_req.latency_budget_ms,
+        confidence_hint=effective_req.confidence_hint,
+    )
+    if not ranked:
+        _record_brownout_result(
+            effective_req.tenant_id,
+            latency_ms=(time.monotonic() - started) * 1000,
+            success=False,
+        )
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         raise HTTPException(status_code=503, detail="no providers registered")
 
     log_event(
@@ -285,43 +711,180 @@ async def _execute_completion(
         request_id=request_id,
         intent=intent.value,
         primary=ranked[0].provider.name,
+<<<<<<< HEAD
+=======
+        policy_matched_rules=list(pe.matched_rules) if pe else [],
+        policy_blocked=list(pe.blocked_providers) if pe else [],
+        policy_complexity=pe.complexity_score if pe else None,
+        brownout_active=bs.is_degraded,
+        brownout_reason=bs.reason,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     )
 
     fallback_used = False
     last_error: Optional[str] = None
 
+<<<<<<< HEAD
     for i, scored in enumerate(ranked):
         info = scored.provider
         allowed, retry_ms = await _check_rate_limit(req.tenant_id, info.name)
+=======
+    pending: list = list(ranked)
+    i = 0
+    attempts = 0
+    _provider_attempts: dict[str, int] = {}
+    while pending:
+        # Budget-aware pre-call gate: if the next-up provider would push the
+        # tenant past its budget, demote to the cheapest still-pending option.
+        # This implements the spec's "fallback if marginal gain < cost delta"
+        # rule without requiring the policy_engine to know about live spend.
+        tenant_budget = budget_ctx.get("tenant_budget_usd")
+        tenant_spent = budget_ctx.get("tenant_spent_usd", 0.0)
+        team_budget = budget_ctx.get("team_budget_usd")
+        team_spent = budget_ctx.get("team_spent_usd", 0.0)
+        workflow_budget = budget_ctx.get("workflow_budget_usd")
+        workflow_spent = budget_ctx.get("workflow_spent_usd", 0.0)
+        if (tenant_budget is not None or team_budget is not None or workflow_budget is not None) and len(pending) >= 1:
+            head = pending[0]
+            projected = (effective_req.max_tokens / 1000.0) * head.provider.cost_per_1k_tokens
+            tenant_exceed = tenant_budget is not None and (tenant_spent + projected > tenant_budget)
+            team_exceed = team_budget is not None and (team_spent + projected > team_budget)
+            workflow_exceed = workflow_budget is not None and (workflow_spent + projected > workflow_budget)
+            if tenant_exceed or team_exceed or workflow_exceed:
+                cheaper = min(pending, key=lambda s: s.provider.cost_per_1k_tokens)
+                if cheaper is not head:
+                    scope = "tenant" if tenant_exceed else ("team" if team_exceed else "workflow")
+                    log_event(
+                        log,
+                        "budget_gate_demoted",
+                        scope=scope,
+                        from_provider=head.provider.name,
+                        to_provider=cheaper.provider.name,
+                        projected_cost=round(projected, 6),
+                        tenant_budget=tenant_budget,
+                        tenant_spent=tenant_spent,
+                    )
+                    pending.remove(cheaper)
+                    pending.insert(0, cheaper)
+                    fallback_used = True
+        scored = pending.pop(0)
+        info = scored.provider
+        local_attempt = _provider_attempts.get(info.name, 0) + 1
+        _provider_attempts[info.name] = local_attempt
+
+        # Per-provider retry budget. Keep at least one attempt per provider.
+        if local_attempt > max(1, int(info.max_retries)):
+            log_event(
+                log,
+                "provider_retry_budget_exhausted",
+                provider=info.name,
+                attempts=local_attempt - 1,
+                max_retries=info.max_retries,
+            )
+            fallback_used = True
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            attempts += 1
+            continue
+
+        allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         if not allowed:
             log_event(
                 log, "rate_limited", provider=info.name, retry_after_ms=retry_ms
             )
             last_error = f"rate_limited:{info.name}"
             fallback_used = True
+<<<<<<< HEAD
             continue
 
         ok, latency_ms, data = await _call_provider(info, req)
         asyncio.create_task(_report_health(info.name, ok, latency_ms))
 
         # Record feedback outcome
+=======
+            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            i += 1
+            attempts += 1
+            continue
+
+        ok, latency_ms, data, error_kind, error_retry_after_ms, status_code, retryable = await _call_provider(
+            info, effective_req
+        )
+        asyncio.create_task(_report_health(info.name, ok, latency_ms))
+        weight_tuner.observe(intent, scored.sub_scores, ok)
+
+        # Record feedback outcome
+        prompt_chars = len(effective_req.messages[0].content) if effective_req.messages else 1
+        response_text = data.get("content", "") if data else ""
+        hallucination_signal = (
+            compute_hallucination_signal(response_text, prompt_char_count=prompt_chars)
+            if ok
+            else 0.0
+        )
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         outcome = CompletionOutcome(
             provider=info.name,
             latency_ms=latency_ms,
             success=ok,
             prompt_tokens=int(data.get("prompt_tokens", 0)) if data else 0,
             completion_tokens=int(data.get("completion_tokens", 0)) if data else 0,
+<<<<<<< HEAD
             prompt_char_count=len(req.messages[0].content) if req.messages else 1,
             response_char_count=len(data.get("content", "")) if data else 0,
+=======
+            prompt_char_count=prompt_chars,
+            response_char_count=len(response_text),
+            hallucination_signal=hallucination_signal,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         )
         feedback.record(outcome)
 
         if not ok:
             log_event(
+<<<<<<< HEAD
                 log, "provider_failed", provider=info.name, latency_ms=latency_ms
             )
             last_error = f"provider_failed:{info.name}"
             fallback_used = True
+=======
+                log,
+                "provider_failed",
+                provider=info.name,
+                latency_ms=latency_ms,
+                error_kind=error_kind,
+                status_code=status_code,
+            )
+            last_error = f"provider_failed:{info.name}:{error_kind or 'unknown'}"
+            fallback_used = True
+            same_provider_retry_kinds = {"rate_limited", "timeout", "transport_error"}
+            if (
+                retryable
+                and error_kind in same_provider_retry_kinds
+                and local_attempt < max(1, int(info.max_retries))
+            ):
+                backoff_ms = _error_backoff_ms(
+                    info,
+                    intent,
+                    local_attempt,
+                    error_kind,
+                    retry_after_ms=error_retry_after_ms,
+                )
+                log_event(
+                    log,
+                    "provider_retry_scheduled",
+                    provider=info.name,
+                    local_attempt=local_attempt,
+                    max_retries=info.max_retries,
+                    error_kind=error_kind,
+                    backoff_ms=round(backoff_ms, 2),
+                )
+                await asyncio.sleep(backoff_ms / 1000.0)
+                pending.insert(0, scored)
+            else:
+                pending = policy.reorder_after_failure(pending, info.capability_tier)
+            i += 1
+            attempts += 1
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             continue
 
         prompt_tokens = int(data.get("prompt_tokens", 0))
@@ -333,7 +896,13 @@ async def _execute_completion(
             _publish_cost(
                 CostEvent(
                     request_id=request_id,
+<<<<<<< HEAD
                     tenant_id=req.tenant_id,
+=======
+                    tenant_id=effective_req.tenant_id,
+                    team_id=effective_req.team_id,
+                    workflow_id=effective_req.workflow_id,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
                     provider=info.name,
                     model=info.model,
                     prompt_tokens=prompt_tokens,
@@ -344,6 +913,14 @@ async def _execute_completion(
             )
         )
 
+<<<<<<< HEAD
+=======
+        _record_brownout_result(
+            effective_req.tenant_id,
+            latency_ms=(time.monotonic() - started) * 1000,
+            success=True,
+        )
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         return CompletionResponse(
             request_id=request_id,
             provider=info.name,
@@ -356,13 +933,26 @@ async def _execute_completion(
             estimated_cost_usd=round(estimated_cost, 6),
             fallback_used=fallback_used or i > 0,
             degraded=i > 0,
+<<<<<<< HEAD
         )
 
+=======
+            policy_evaluation=pe,
+            brownout_status=bs,
+        )
+
+    _record_brownout_result(
+        effective_req.tenant_id,
+        latency_ms=(time.monotonic() - started) * 1000,
+        success=False,
+    )
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     raise HTTPException(status_code=503, detail=f"all providers failed: {last_error}")
 
 
 async def _call_provider(
     info: ProviderInfo, req: CompletionRequest
+<<<<<<< HEAD
 ) -> tuple[bool, float, dict | None]:
     assert _http is not None
     start = time.monotonic()
@@ -375,12 +965,76 @@ async def _call_provider(
     except Exception as exc:
         log_event(log, "provider_call_error", provider=info.name, error=str(exc))
         return False, (time.monotonic() - start) * 1000, None
+=======
+) -> tuple[bool, float, dict | None, str | None, int, int | None, bool]:
+    assert _http is not None
+    start = time.monotonic()
+    intent = classify(req)
+    timeout_s = _provider_timeout_s(info, intent)
+    try:
+        ok, data = await call_provider(_http, info, req, timeout_s=timeout_s)
+        return ok, (time.monotonic() - start) * 1000, data, None, 0, None, True
+    except ProviderCallError as exc:
+        log_event(
+            log,
+            "provider_call_error",
+            provider=info.name,
+            error=str(exc),
+            error_kind=getattr(exc, "kind", "unknown"),
+            status_code=getattr(exc, "status_code", None),
+        )
+        return (
+            False,
+            (time.monotonic() - start) * 1000,
+            None,
+            getattr(exc, "kind", "unknown"),
+            int(getattr(exc, "retry_after_ms", 0) or 0),
+            getattr(exc, "status_code", None),
+            bool(getattr(exc, "retryable", False)),
+        )
+    except Exception as exc:
+        log_event(log, "provider_call_error", provider=info.name, error=str(exc))
+        return False, (time.monotonic() - start) * 1000, None, "unknown", 0, None, False
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 class RouteDecision(BaseModel):
     intent: str
     ranked: list[str]
     scores: dict[str, float]
+<<<<<<< HEAD
+=======
+    policy_evaluation: Optional[PolicyEvaluationResult] = None
+    brownout_status: Optional[BrownoutStatus] = None
+
+
+@app.get("/weights")
+async def get_weights() -> dict:
+    """Current per-intent multi-objective weights and tuner samples."""
+    out: dict[str, dict] = {}
+    for intent, weights in policy._weights.items():
+        snap = weight_tuner.snapshot(intent)
+        out[intent.value] = {
+            "latency": round(weights.latency, 4),
+            "cost": round(weights.cost, 4),
+            "capability": round(weights.capability, 4),
+            "success": round(weights.success, 4),
+            "tuner_samples": snap.samples,
+            "tuner_net_credit": {k: round(v, 4) for k, v in snap.net_credit.items()},
+        }
+    return out
+
+
+@app.post("/weights/rebalance/{intent}")
+async def rebalance_weights(intent: str) -> dict:
+    """Manually trigger a tuner rebalance for a given intent."""
+    try:
+        intent_enum = Intent(intent)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"unknown intent: {intent}")
+    applied = weight_tuner.maybe_rebalance(intent_enum)
+    return {"intent": intent, "rebalanced": applied}
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @app.get("/feedback")
@@ -393,6 +1047,10 @@ async def get_feedback() -> dict:
             "success_rate_ema": round(m.success_rate_ema, 4),
             "token_efficiency_ema": round(m.token_efficiency_ema, 4),
             "anomaly_score": round(m.anomaly_score, 4),
+<<<<<<< HEAD
+=======
+            "quality_score": round(m.quality_score, 4),
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             "sample_count": m.sample_count,
         }
         for name, m in metrics.items()
@@ -411,6 +1069,7 @@ async def queue_stats() -> dict:
     }
 
 
+<<<<<<< HEAD
 @app.post("/decide", response_model=RouteDecision)
 async def decide(req: CompletionRequest) -> RouteDecision:
     """Introspection endpoint: return the routing decision without executing it."""
@@ -418,11 +1077,75 @@ async def decide(req: CompletionRequest) -> RouteDecision:
     health = await _fetch_health_snapshot()
     ranked = policy.rank(
         registry.all(), health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
+=======
+@app.get("/brownout", response_model=BrownoutStatus)
+async def brownout_status() -> BrownoutStatus:
+    bs = brownout_manager.snapshot()
+    return BrownoutStatus(
+        is_degraded=bs.is_degraded,
+        reason=bs.reason,
+        entered_at_unix=bs.entered_at_unix,
+        queue_depth=bs.queue_depth,
+        p95_latency_ms=bs.p95_latency_ms,
+        error_rate=bs.error_rate,
+        timeout_rate=bs.timeout_rate,
+    )
+
+
+@app.get("/brownout/metrics")
+async def brownout_metrics() -> dict:
+    return {
+        "global": brownout_manager.metrics(),
+        "tenants": {
+            key: mgr.metrics()
+            for key, mgr in _tenant_brownout.items()
+        },
+    }
+
+
+@app.get("/brownout/{tenant_id}", response_model=BrownoutStatus)
+async def brownout_status_for_tenant(tenant_id: str) -> BrownoutStatus:
+    bs = _tenant_brownout_manager(tenant_id).snapshot()
+    return BrownoutStatus(
+        is_degraded=bs.is_degraded,
+        reason=bs.reason,
+        entered_at_unix=bs.entered_at_unix,
+        queue_depth=bs.queue_depth,
+        p95_latency_ms=bs.p95_latency_ms,
+        error_rate=bs.error_rate,
+        timeout_rate=bs.timeout_rate,
+    )
+
+
+@app.post("/decide", response_model=RouteDecision)
+async def decide(req: CompletionRequest) -> RouteDecision:
+    """Introspection endpoint: return the routing decision without executing it."""
+    intent, health, candidates, pe, bs, _budget_ctx = await _prepare_routing(req)
+    ranked = policy.rank(
+        candidates,
+        health=health,
+        intent=intent,
+        latency_budget_ms=req.latency_budget_ms,
+        confidence_hint=req.confidence_hint,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     )
     return RouteDecision(
         intent=intent.value,
         ranked=[s.provider.name for s in ranked],
         scores={s.provider.name: round(s.score, 4) for s in ranked},
+<<<<<<< HEAD
+=======
+        policy_evaluation=pe,
+        brownout_status=BrownoutStatus(
+            is_degraded=bs.is_degraded,
+            reason=bs.reason,
+            entered_at_unix=bs.entered_at_unix,
+            queue_depth=bs.queue_depth,
+            p95_latency_ms=bs.p95_latency_ms,
+            error_rate=bs.error_rate,
+            timeout_rate=bs.timeout_rate,
+        ),
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     )
 
 
@@ -433,6 +1156,32 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
 
     # Determine priority
     priority = INTENT_PRIORITY.get(intent, Priority.MEDIUM)
+<<<<<<< HEAD
+=======
+    bs = brownout_manager.snapshot()
+
+    # Brownout override for lowest-priority traffic.
+    if (
+        bs.is_degraded
+        and priority == Priority.LOW
+        and brownout_manager.config.drop_low_priority_when_degraded
+    ):
+        log_event(
+            log,
+            "brownout_low_priority_drop",
+            request_id=request_id,
+            reason=bs.reason,
+            intent=intent.value,
+        )
+        raise HTTPException(status_code=503, detail="brownout active: low-priority traffic deferred")
+
+    if (
+        bs.is_degraded
+        and priority == Priority.LOW
+        and brownout_manager.config.delay_low_priority_ms > 0
+    ):
+        await asyncio.sleep(brownout_manager.config.delay_low_priority_ms / 1000.0)
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
     # HIGH priority requests bypass the queue
     if priority == Priority.HIGH:
@@ -459,6 +1208,12 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
         return response
     except asyncio.TimeoutError:
         request_queue.record_timeout(request_id)
+<<<<<<< HEAD
+=======
+        _record_brownout_result(
+            req.tenant_id, latency_ms=timeout_s * 1000.0, success=False, timed_out=True
+        )
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         raise HTTPException(
             status_code=504, detail=f"request processing timed out after {timeout_s}s"
         )

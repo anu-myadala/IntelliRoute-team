@@ -6,6 +6,11 @@ anomaly score.
 """
 from __future__ import annotations
 
+<<<<<<< HEAD
+=======
+import json
+import re
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 import threading
 import time
 from dataclasses import dataclass, field
@@ -15,6 +20,65 @@ from typing import Callable, Optional
 Clock = Callable[[], float]
 
 
+<<<<<<< HEAD
+=======
+# Canned-refusal phrases. Match anywhere, case-insensitively. The list is
+# intentionally short — false positives here just nudge the anomaly EMA, they
+# don't block routing — and skewed toward strings that almost never appear
+# inside a legitimate substantive answer.
+_REFUSAL_PATTERNS = (
+    re.compile(r"\bi (?:cannot|can't|am unable to)\b", re.IGNORECASE),
+    re.compile(r"\bas an ai (?:language )?model\b", re.IGNORECASE),
+    re.compile(r"\bi'?m sorry,? but\b", re.IGNORECASE),
+    re.compile(r"\bi (?:don'?t|do not) have (?:access|the ability)\b", re.IGNORECASE),
+)
+
+
+def compute_hallucination_signal(
+    response_text: str,
+    *,
+    prompt_char_count: int = 1,
+    expects_json: bool = False,
+) -> float:
+    """Heuristic hallucination/anomaly score in [0, 1] from a response.
+
+    Returns 0.0 for healthy responses and approaches 1.0 as more red flags
+    fire. Combined with the latency-anomaly signal in the feedback collector
+    so that bad-output bursts pull the provider's ranking down without
+    requiring an explicit user thumbs-down.
+
+    Signals
+    -------
+    * Empty/near-empty response for a non-trivial prompt (length anomaly).
+    * Canned refusal phrases ("I cannot...", "as an AI model", ...).
+    * Declared JSON intent but the response does not parse.
+    """
+    if response_text is None:
+        return 1.0
+    text = response_text.strip()
+    score = 0.0
+
+    # Length anomaly: tiny output for a non-trivial prompt.
+    if not text:
+        score = max(score, 1.0)
+    elif prompt_char_count >= 40 and len(text) < 5:
+        score = max(score, 0.7)
+
+    for pattern in _REFUSAL_PATTERNS:
+        if pattern.search(text):
+            score = max(score, 0.5)
+            break
+
+    if expects_json and text:
+        try:
+            json.loads(text)
+        except (ValueError, TypeError):
+            score = max(score, 0.6)
+
+    return min(1.0, score)
+
+
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 @dataclass
 class CompletionOutcome:
     """Result from a single completion attempt."""
@@ -26,6 +90,13 @@ class CompletionOutcome:
     completion_tokens: int = 0
     prompt_char_count: int = 1
     response_char_count: int = 0
+<<<<<<< HEAD
+=======
+    # Pre-computed hallucination/output-shape score in [0, 1]. The router
+    # passes the response text through ``compute_hallucination_signal`` and
+    # stores the result here; the EMA collector folds it into anomaly_score.
+    hallucination_signal: float = 0.0
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @dataclass
@@ -36,9 +107,27 @@ class ProviderMetrics:
     success_rate_ema: float = 1.0
     token_efficiency_ema: float = 1.0
     anomaly_score: float = 0.0
+<<<<<<< HEAD
     sample_count: int = 0
 
 
+=======
+    quality_score: float = 1.0
+    sample_count: int = 0
+
+
+def _compute_quality_score(success_rate_ema: float, anomaly_score: float) -> float:
+    """Simple bounded quality heuristic in [0, 1].
+
+    We bias toward observed success while still penalizing anomaly bursts.
+    """
+    success = max(0.0, min(1.0, success_rate_ema))
+    anomaly = max(0.0, min(1.0, anomaly_score))
+    quality = 0.75 * success + 0.25 * (1.0 - anomaly)
+    return max(0.0, min(1.0, quality))
+
+
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 class FeedbackCollector:
     """Thread-safe collector of completion outcomes with EMA metric tracking.
 
@@ -108,11 +197,25 @@ class FeedbackCollector:
                         + (1 - self._alpha) * metrics.token_efficiency_ema
                     )
 
+<<<<<<< HEAD
             # Update anomaly score
             anomaly = self._detect_anomaly(outcome)
             metrics.anomaly_score = (
                 self._alpha * anomaly + (1 - self._alpha) * metrics.anomaly_score
             )
+=======
+            # Update anomaly score (latency-shape + hallucination proxy).
+            anomaly = max(
+                self._detect_anomaly(outcome),
+                max(0.0, min(1.0, outcome.hallucination_signal)),
+            )
+            metrics.anomaly_score = (
+                self._alpha * anomaly + (1 - self._alpha) * metrics.anomaly_score
+            )
+            metrics.quality_score = _compute_quality_score(
+                metrics.success_rate_ema, metrics.anomaly_score
+            )
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
     @staticmethod
     def _detect_anomaly(outcome: CompletionOutcome) -> float:
@@ -147,6 +250,10 @@ class FeedbackCollector:
                 success_rate_ema=metrics.success_rate_ema,
                 token_efficiency_ema=metrics.token_efficiency_ema,
                 anomaly_score=metrics.anomaly_score,
+<<<<<<< HEAD
+=======
+                quality_score=metrics.quality_score,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
                 sample_count=metrics.sample_count,
             )
 
@@ -159,6 +266,10 @@ class FeedbackCollector:
                     success_rate_ema=m.success_rate_ema,
                     token_efficiency_ema=m.token_efficiency_ema,
                     anomaly_score=m.anomaly_score,
+<<<<<<< HEAD
+=======
+                    quality_score=m.quality_score,
+>>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
                     sample_count=m.sample_count,
                 )
                 for name, m in self._metrics.items()

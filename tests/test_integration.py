@@ -53,7 +53,7 @@ def _wait_ready(url: str, timeout: float = 10.0) -> None:
 
 
 class _Stack:
-    def __init__(self) -> None:
+    def __init__(self, env_overrides: dict[str, str] | None = None) -> None:
         self.ports = {
             "gateway": _free_port(),
             "router": _free_port(),
@@ -65,6 +65,7 @@ class _Stack:
             "mock_cheap": _free_port(),
         }
         self.procs: list[subprocess.Popen] = []
+        self.env_overrides = dict(env_overrides or {})
 
     def _base_env(self) -> dict:
         env = os.environ.copy()
@@ -78,6 +79,7 @@ class _Stack:
         env["INTELLIROUTE_MOCK_FAST_PORT"] = str(self.ports["mock_fast"])
         env["INTELLIROUTE_MOCK_SMART_PORT"] = str(self.ports["mock_smart"])
         env["INTELLIROUTE_MOCK_CHEAP_PORT"] = str(self.ports["mock_cheap"])
+        env.update(self.env_overrides)
         return env
 
     def _spawn_uvicorn(self, module: str, port: int, extra_env: dict | None = None) -> None:
@@ -217,6 +219,17 @@ def _batch_request() -> dict:
     }
 
 
+def _workflow_batch_request() -> dict:
+    return {
+        "tenant_id": "ignored-by-gateway",
+        "team_id": "team-alpha",
+        "workflow_id": "nightly-batch",
+        "messages": [{"role": "user", "content": "Summarize the following document into bullet points"}],
+        "max_tokens": 50,
+        "intent_hint": "batch",
+    }
+
+
 def test_interactive_prompt_routes_to_fast(stack):
     r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_interactive_request(), headers=_headers(), timeout=10.0)
     assert r.status_code == 200, r.text
@@ -226,20 +239,18 @@ def test_interactive_prompt_routes_to_fast(stack):
     assert body["total_tokens"] > 0
 
 
-def test_batch_prompt_routes_to_cheap(stack):
-    r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_batch_request(), headers=_headers(), timeout=10.0)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["provider"] == "mock-cheap"
-
-
 def test_router_decide_endpoint_returns_ranking(stack):
     r = httpx.post(f"{stack.router_url}/decide", json=_interactive_request(), timeout=5.0)
     assert r.status_code == 200
     body = r.json()
     assert body["intent"] == "interactive"
     assert body["ranked"][0] == "mock-fast"
-    assert set(body["ranked"]) == {"mock-fast", "mock-smart", "mock-cheap"}
+    # Policy layer removes premium and high-latency mocks for short interactive.
+    assert "mock-smart" not in body["ranked"]
+    pe = body.get("policy_evaluation")
+    assert pe is not None
+    assert pe["complexity_score"] >= 0.0
+    assert isinstance(pe.get("matched_rules"), list)
 
 
 def test_failover_when_top_provider_is_down(stack):
@@ -261,6 +272,13 @@ def test_failover_when_top_provider_is_down(stack):
         assert body["fallback_used"] is True
     finally:
         httpx.post(f"{stack.mock_url('mock_fast')}/admin/force_fail", json={"fail": False}, timeout=5.0)
+
+
+def test_batch_prompt_routes_to_cheap(stack):
+    r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_batch_request(), headers=_headers(), timeout=10.0)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["provider"] == "mock-cheap"
 
 
 def test_rate_limiter_throttles_when_bucket_drained(stack):
@@ -310,6 +328,45 @@ def test_cost_tracker_reflects_tenant_spend(stack):
     assert len(summary["by_provider"]) >= 1
 
 
+def test_team_workflow_rollups_and_budget_endpoints(stack):
+    r = httpx.post(
+        f"{stack.gateway_url}/v1/complete",
+        json=_workflow_batch_request(),
+        headers=_headers(),
+        timeout=10.0,
+    )
+    assert r.status_code == 200, r.text
+    team_summary = httpx.get(
+        f"{stack.cost_tracker_url}/summary/team/team-alpha", timeout=5.0
+    ).json()
+    workflow_summary = httpx.get(
+        f"{stack.cost_tracker_url}/summary/workflow/nightly-batch", timeout=5.0
+    ).json()
+    assert team_summary["total_requests"] >= 1
+    assert workflow_summary["total_requests"] >= 1
+
+    rb = httpx.post(
+        f"{stack.cost_tracker_url}/budget/team",
+        json={"team_id": "team-alpha", "budget_usd": 1.0},
+        timeout=5.0,
+    )
+    assert rb.status_code == 200
+    wb = httpx.post(
+        f"{stack.cost_tracker_url}/budget/workflow",
+        json={"workflow_id": "nightly-batch", "budget_usd": 1.0},
+        timeout=5.0,
+    )
+    assert wb.status_code == 200
+    tb = httpx.get(
+        f"{stack.cost_tracker_url}/budget/team/team-alpha", timeout=5.0
+    ).json()
+    wfb = httpx.get(
+        f"{stack.cost_tracker_url}/budget/workflow/nightly-batch", timeout=5.0
+    ).json()
+    assert tb["team_id"] == "team-alpha"
+    assert wfb["workflow_id"] == "nightly-batch"
+
+
 def test_unauthenticated_request_is_rejected(stack):
     r = httpx.post(f"{stack.gateway_url}/v1/complete", json=_interactive_request(), timeout=5.0)
     assert r.status_code == 401
@@ -339,6 +396,7 @@ def test_feedback_endpoint_populated_after_completions(stack):
     for provider_name, metrics in feedback.items():
         assert "latency_ema" in metrics
         assert "success_rate_ema" in metrics
+        assert "quality_score" in metrics
         assert "sample_count" in metrics
 
 
@@ -368,3 +426,38 @@ def test_election_status_shows_leader(stack):
     if "replica_id" in status:
         assert "state" in status
         assert "is_leader" in status
+
+
+def test_brownout_mode_reflected_in_decide_and_complete():
+    """Run a stack with aggressive brownout thresholds and verify metadata."""
+    s = _Stack(
+        env_overrides={
+            "INTELLIROUTE_BROWNOUT_ENABLED": "1",
+            "INTELLIROUTE_BROWNOUT_ENTER_CONSEC": "1",
+            "INTELLIROUTE_BROWNOUT_EXIT_CONSEC": "1",
+            "INTELLIROUTE_BROWNOUT_QUEUE_ENTER": "0",
+            "INTELLIROUTE_BROWNOUT_QUEUE_EXIT": "0",
+        }
+    )
+    s.start()
+    try:
+        r = httpx.post(f"{s.router_url}/decide", json=_batch_request(), timeout=5.0)
+        assert r.status_code == 200
+        body = r.json()
+        bs = body.get("brownout_status")
+        assert bs is not None and bs["is_degraded"] is True
+        pe = body.get("policy_evaluation")
+        assert pe is not None
+        assert "brownout_degrade_low_priority_routing" in pe.get("matched_rules", [])
+
+        r2 = httpx.post(
+            f"{s.gateway_url}/v1/complete",
+            json={**_batch_request(), "max_tokens": 512},
+            headers=_headers(),
+            timeout=10.0,
+        )
+        assert r2.status_code == 200, r2.text
+        resp = r2.json()
+        assert resp.get("brownout_status", {}).get("is_degraded") is True
+    finally:
+        s.stop()

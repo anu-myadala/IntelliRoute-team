@@ -36,6 +36,12 @@ log = get_logger("rate_limiter")
 _default = BucketConfig(capacity=10, refill_rate=1.0)
 store = RateLimiterStore(default_config=_default)
 
+# Opt-in strong consistency: when enabled, a follower with an expired
+# leader lease fails closed instead of serving requests from its local
+# bucket. Trades availability for guaranteed quota correctness — used to
+# satisfy the spec's "strong consistency for quotas (avoid cost overruns)".
+_STRONG_CONSISTENCY = os.environ.get("RATE_LIMITER_STRONG_CONSISTENCY", "0") == "1"
+
 app = FastAPI(title="IntelliRoute RateLimiter")
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +53,7 @@ app.add_middleware(
 _http: Optional[httpx.AsyncClient] = None
 _election: Optional[LeaderElection] = None
 _background_tasks: list[asyncio.Task] = []
+_replication_offset: int = 0
 
 
 def _setup_election() -> None:
@@ -170,18 +177,44 @@ async def _leader_watchdog() -> None:
 
 
 async def _log_sync_loop() -> None:
-    """Replicate log entries to followers if this is the leader."""
+    """Followers pull and replay leader log entries for eventual convergence."""
+    global _replication_offset
     while True:
         try:
-            if _election and _election.is_leader:
-                # In a real system, send log entries to followers
-                await asyncio.sleep(0.5)
+            if _election and not _election.is_leader and _http:
+                leader_id = _election.current_leader
+                if not leader_id:
+                    await asyncio.sleep(0.2)
+                    continue
+                leader_url = None
+                for peer in _election._peers.values():
+                    if peer.replica_id == leader_id:
+                        leader_url = peer.url
+                        break
+                if not leader_url:
+                    await asyncio.sleep(0.2)
+                    continue
+
+                r = await _http.get(f"{leader_url}/log/since/{_replication_offset}", timeout=2.0)
+                if r.status_code == 200:
+                    payload = r.json()
+                    entries = payload.get("entries", [])
+                    for e in entries:
+                        store.replay_log_entry(
+                            ts=float(e["ts"]),
+                            key=str(e["key"]),
+                            amount=float(e["amount"]),
+                            allowed=bool(e["allowed"]),
+                        )
+                    _replication_offset = int(payload.get("total_length", _replication_offset))
+                await asyncio.sleep(0.2)
             else:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             break
         except Exception as exc:
             log_event(log, "sync_error", error=str(exc))
+            await asyncio.sleep(0.5)
 
 
 @app.get("/health")
@@ -203,6 +236,7 @@ async def leader() -> dict:
 
 @app.post("/check", response_model=RateLimitResult)
 async def check(req: RateLimitCheck) -> RateLimitResult:
+    forwarded = False
     if _election and not _election.is_leader:
         # Follower: forward to leader
         leader_id = _election.current_leader
@@ -222,6 +256,7 @@ async def check(req: RateLimitCheck) -> RateLimitResult:
                     )
                     if r.status_code == 200:
                         result = r.json()
+                        forwarded = True
                         return RateLimitResult(**result)
                 except Exception as exc:
                     log_event(
@@ -231,8 +266,29 @@ async def check(req: RateLimitCheck) -> RateLimitResult:
                         error=str(exc),
                     )
 
-        # Fallback to local on failure
-        pass
+        # Under strong-consistency mode, followers never decide locally.
+        # If forwarding fails, fail closed (regardless of lease freshness).
+        if _STRONG_CONSISTENCY and not forwarded:
+            if not _election.has_valid_lease():
+                log_event(
+                    log,
+                    "lease_expired_fail_closed",
+                    replica=_election._replica_id,
+                    last_heartbeat=_election._last_heartbeat,
+                )
+            else:
+                log_event(
+                    log,
+                    "forward_failed_fail_closed",
+                    replica=_election._replica_id,
+                    leader=leader_id,
+                )
+            return RateLimitResult(
+                allowed=False,
+                remaining=0,
+                retry_after_ms=int(_election._config.heartbeat_timeout_s * 1000),
+                leader_replica=leader_id,
+            )
 
     # Leader or follback: use local store
     key = f"{req.tenant_id}|{req.provider}"
@@ -265,6 +321,65 @@ class ConfigPayload(BaseModel):
 async def set_config(payload: ConfigPayload) -> dict:
     store.set_config(payload.key, BucketConfig(payload.capacity, payload.refill_rate))
     return {"updated": payload.key}
+
+
+class TenantProviderQuota(BaseModel):
+    tenant_id: str
+    provider: str
+    capacity: float
+    refill_rate: float
+
+
+@app.post("/config/tenant-provider")
+async def set_tenant_provider_quota(payload: TenantProviderQuota) -> dict:
+    store.set_tenant_provider_quota(
+        payload.tenant_id,
+        payload.provider,
+        BucketConfig(payload.capacity, payload.refill_rate),
+    )
+    return {"updated": f"{payload.tenant_id}|{payload.provider}"}
+
+
+class TenantQuota(BaseModel):
+    tenant_id: str
+    capacity: float
+    refill_rate: float
+
+
+@app.post("/config/tenant")
+async def set_tenant_quota(payload: TenantQuota) -> dict:
+    store.set_tenant_default(
+        payload.tenant_id,
+        BucketConfig(payload.capacity, payload.refill_rate),
+    )
+    return {"updated": f"{payload.tenant_id}|*"}
+
+
+class ProviderQuota(BaseModel):
+    provider: str
+    capacity: float
+    refill_rate: float
+
+
+@app.post("/config/provider")
+async def set_provider_quota(payload: ProviderQuota) -> dict:
+    store.set_provider_default(
+        payload.provider,
+        BucketConfig(payload.capacity, payload.refill_rate),
+    )
+    return {"updated": f"*|{payload.provider}"}
+
+
+@app.get("/config/resolve/{tenant_id}/{provider}")
+async def resolve_quota(tenant_id: str, provider: str) -> dict:
+    cfg, source = store.resolve_config(f"{tenant_id}|{provider}")
+    return {
+        "tenant_id": tenant_id,
+        "provider": provider,
+        "capacity": cfg.capacity,
+        "refill_rate": cfg.refill_rate,
+        "source": source,
+    }
 
 
 @app.get("/log/since/{offset}")
