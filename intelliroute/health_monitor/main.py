@@ -13,6 +13,7 @@ import time
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from ..common.logging import get_logger, log_event
 from ..common.models import ProviderHealth
@@ -22,6 +23,10 @@ log = get_logger("health_monitor")
 
 breakers: dict[str, CircuitBreaker] = {}
 provider_urls: dict[str, str] = {}
+
+# Running count of /report calls received since process start.
+# Not reset by /reset so operators can distinguish "no events" from "reset just ran".
+_total_reports: int = 0
 _config = CircuitBreakerConfig(failure_threshold=3, open_duration_s=5, half_open_success_required=2)
 
 app = FastAPI(title="IntelliRoute HealthMonitor")
@@ -61,6 +66,8 @@ async def register(name: str, url: str) -> dict:
 
 @app.post("/report/{provider}")
 async def report(provider: str, success: bool, latency_ms: float = 0.0) -> dict:
+    global _total_reports
+    _total_reports += 1
     b = _get_breaker(provider)
     if success:
         b.record_success()
@@ -96,6 +103,47 @@ async def snapshot_one(provider: str) -> ProviderHealth:
         circuit_state=b.state.value,
         consecutive_failures=b.consecutive_failures,
         last_checked_unix=time.time(),
+    )
+
+
+class HealthMonitorStats(BaseModel):
+    """Aggregate health-monitoring statistics returned by GET /stats."""
+
+    # Number of providers that have sent at least one heartbeat or been
+    # manually registered via POST /register.
+    registered_providers: int
+
+    # Total POST /report calls received since this process started.
+    # Useful for verifying that the router is actually sending outcome signals.
+    total_reports_received: int
+
+    # Per-state circuit-breaker counts across all tracked providers.
+    open_circuits: int       # providers currently blocked
+    half_open_circuits: int  # providers under probe (limited traffic)
+    closed_circuits: int     # healthy providers
+
+    # Macro error rate: mean of per-provider error_rate() values.
+    # Reflects the overall health signal the router is receiving.
+    overall_error_rate: float
+
+
+@app.get("/stats", response_model=HealthMonitorStats)
+async def stats() -> HealthMonitorStats:
+    """Return aggregate circuit-breaker state across all registered providers."""
+    states = [b.state.value for b in breakers.values()]
+    open_count = states.count("open")
+    half_open_count = states.count("half_open")
+    closed_count = states.count("closed")
+    # Average error rate across all tracked providers; 0.0 when no providers registered.
+    error_rates = [b.error_rate() for b in breakers.values()]
+    overall = round(sum(error_rates) / len(error_rates), 4) if error_rates else 0.0
+    return HealthMonitorStats(
+        registered_providers=len(provider_urls),
+        total_reports_received=_total_reports,
+        open_circuits=open_count,
+        half_open_circuits=half_open_count,
+        closed_circuits=closed_count,
+        overall_error_rate=overall,
     )
 
 
