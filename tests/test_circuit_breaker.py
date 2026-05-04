@@ -185,3 +185,97 @@ def test_consecutive_failures_resets_to_zero_after_close():
     breaker.record_success()  # → CLOSED
     assert breaker.state == CircuitState.CLOSED
     assert breaker.consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# Further behavioral and window-semantic tests
+# ---------------------------------------------------------------------------
+
+def test_open_circuit_ignores_success_signals():
+    """Recording successes while the circuit is OPEN must not transition it to
+    HALF_OPEN or CLOSED; state changes are only triggered by allow_request()
+    once the cooldown has elapsed.
+
+    A buggy implementation that watches for successes in OPEN state could be
+    tricked into closing prematurely by a provider that happens to serve one
+    healthy response while still overall degraded.
+    """
+    breaker, clock = _make_breaker(failure_threshold=2, open_duration_s=30)
+    breaker.record_failure()
+    breaker.record_failure()
+    assert breaker.state == CircuitState.OPEN
+    # Push in several successes — none of these should flip the state.
+    for _ in range(10):
+        breaker.record_success()
+    assert breaker.state == CircuitState.OPEN
+    # Confirm that the cooldown still governs the transition.
+    clock.now = 5.0
+    assert breaker.allow_request() is False
+    clock.now = 35.0
+    assert breaker.allow_request() is True
+    assert breaker.state == CircuitState.HALF_OPEN
+
+
+def test_allow_request_stays_false_across_multiple_calls_when_open():
+    """allow_request() must return False on every call while OPEN and within
+    the cooldown window — not just the first call.
+
+    Implementations that mutate state on the first False return and then
+    allow subsequent callers through would bypass the circuit-breaker contract.
+    """
+    breaker, clock = _make_breaker(failure_threshold=1, open_duration_s=10)
+    breaker.record_failure()
+    assert breaker.state == CircuitState.OPEN
+    clock.now = 0.0
+    # Ten consecutive allow_request() calls must all be denied.
+    for _ in range(10):
+        assert breaker.allow_request() is False
+
+
+def test_window_size_one_only_last_event_counts():
+    """With window_size=1, the error_rate() should reflect only the most recent
+    signal, discarding all earlier history.
+
+    This validates the sliding-window eviction logic: after recording a failure
+    then a success, the window holds only the success → error rate is 0.0.
+    """
+    breaker, _ = _make_breaker(failure_threshold=1000, window_size=1)
+    breaker.record_failure()
+    assert breaker.error_rate() == 1.0   # window = [failure]
+    breaker.record_success()
+    assert breaker.error_rate() == 0.0   # window = [success] — failure evicted
+
+
+def test_error_rate_full_window_of_failures_is_one():
+    """Filling the entire sliding window with failures must produce exactly 1.0."""
+    window = 6
+    breaker, _ = _make_breaker(failure_threshold=1000, window_size=window)
+    for _ in range(window):
+        breaker.record_failure()
+    assert breaker.error_rate() == 1.0
+
+
+def test_fresh_failures_reopen_after_full_recovery():
+    """After a complete open → half-open → closed recovery, a new burst of
+    failures must reopen the circuit just as it would from the initial state.
+
+    This guards against implementations that permanently lower the effective
+    threshold after a recovery, making the breaker harder to trip the second
+    time around and masking a recurring provider instability.
+    """
+    breaker, clock = _make_breaker(
+        failure_threshold=2, open_duration_s=5, half_open_success_required=1
+    )
+    # First trip
+    breaker.record_failure()
+    breaker.record_failure()
+    clock.now = 10.0
+    breaker.allow_request()   # → HALF_OPEN
+    breaker.record_success()  # → CLOSED
+    assert breaker.state == CircuitState.CLOSED
+
+    # Second burst — must trip again with the same threshold.
+    breaker.record_failure()
+    breaker.record_failure()
+    assert breaker.state == CircuitState.OPEN
+    assert breaker.allow_request() is False
