@@ -10,7 +10,9 @@ from pathlib import Path
 
 import httpx
 
+from intelliroute.common.config import settings
 from intelliroute.common.env import load_dotenv_if_present
+from intelliroute.common.provider_mode import should_skip_mock_uvicorn_subprocesses
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv_if_present()
@@ -78,12 +80,6 @@ SERVICES = [
     {"module": "intelliroute.router.main:app", "port_env": "INTELLIROUTE_ROUTER_PORT", "default_port": 8001, "env": {}},
     {"module": "intelliroute.gateway.main:app", "port_env": "INTELLIROUTE_GATEWAY_PORT", "default_port": 8000, "env": {}},
 ]
-
-
-def _should_use_external_providers() -> bool:
-    using_keys = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GROQ_API_KEY"))
-    force_mocks = os.environ.get("INTELLIROUTE_USE_MOCKS", "").strip().lower() in {"1", "true", "yes", "on"}
-    return using_keys and not force_mocks
 
 
 def _wait_ready(proc: subprocess.Popen, url: str, timeout: float = 30.0) -> None:
@@ -154,8 +150,8 @@ def main() -> int:
         "INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS",
         os.environ.get("INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS", "8"),
     )
-    use_external = _should_use_external_providers()
-    services = SERVICES[3:] if use_external else SERVICES
+    skip_mocks = should_skip_mock_uvicorn_subprocesses(settings)
+    services = SERVICES[3:] if skip_mocks else SERVICES
     frontend_port = int(os.environ.get("INTELLIROUTE_FRONTEND_PORT", "3000"))
     frontend_dir = str(ROOT / "frontend")
     try:
@@ -175,7 +171,12 @@ def main() -> int:
             print(f"starting frontend on :{frontend_port}")
             procs.append(subprocess.Popen(frontend_cmd, env=base_env, cwd=str(ROOT)))
         print("\nIntelliRoute stack running.")
-        print(f"  Providers:  {'external (Gemini/Groq)' if use_external else 'mock demo providers'}")
+        _prov_label = (
+            "external subprocesses skipped; router uses live APIs only"
+            if skip_mocks
+            else "mock demo provider processes + router bootstrap (see INTELLIROUTE_PROVIDER_MODE)"
+        )
+        print(f"  Providers:  {_prov_label}")
         print(f"  Gateway:    http://{host}:8000")
         print(f"  Frontend:   http://{host}:{frontend_port}")
         print("  Press Ctrl-C to stop.\n")

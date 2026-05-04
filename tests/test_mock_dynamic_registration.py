@@ -28,6 +28,9 @@ def test_dynamic_register_then_stale_when_mock_stops():
     router_p = _free_port()
     mock_p = _free_port()
     env = os.environ.copy()
+    env["INTELLIROUTE_SKIP_DOTENV"] = "1"
+    for _k in ("GEMINI_API_KEY", "GROQ_API_KEY"):
+        env.pop(_k, None)
     env["PYTHONPATH"] = str(ROOT)
     env["INTELLIROUTE_HOST"] = "127.0.0.1"
     env["INTELLIROUTE_ROUTER_PORT"] = str(router_p)

@@ -5151,34 +5151,18 @@
             setView('welcome');
         }
 
-        /** User workspace: no switch to Admin. Admin workspace: can open User or stay on Admin. */
-        function applyWorkspaceSwitcherVisibility(view) {
+        /** Always show workspace switcher when top bar is visible (User ↔ Admin). */
+        function applyWorkspaceSwitcherVisibility(_view) {
             const sel = document.getElementById('workspaceSwitch');
             const lab = document.getElementById('workspaceSwitchLabel');
             const locked = document.getElementById('userWorkspaceLockedLabel');
             if (!sel || !locked) return;
-            if (view === 'user') {
-                sel.style.display = 'none';
-                sel.setAttribute('aria-hidden', 'true');
-                sel.disabled = true;
-                if (lab) lab.style.display = 'none';
-                locked.style.display = 'inline-flex';
-                locked.removeAttribute('aria-hidden');
-            } else if (view === 'admin') {
-                sel.style.display = '';
-                sel.removeAttribute('aria-hidden');
-                sel.disabled = false;
-                if (lab) lab.style.display = '';
-                locked.style.display = 'none';
-                locked.setAttribute('aria-hidden', 'true');
-            } else {
-                sel.style.display = '';
-                sel.removeAttribute('aria-hidden');
-                sel.disabled = false;
-                if (lab) lab.style.display = '';
-                locked.style.display = 'none';
-                locked.setAttribute('aria-hidden', 'true');
-            }
+            sel.style.display = '';
+            sel.removeAttribute('aria-hidden');
+            sel.disabled = false;
+            if (lab) lab.style.display = '';
+            locked.style.display = 'none';
+            locked.setAttribute('aria-hidden', 'true');
         }
 
         const EXP_POLICY_ORDER = ['intelliroute', 'round_robin', 'cheapest_first', 'latency_first', 'premium_first'];
@@ -5326,12 +5310,7 @@
             if (enterAdminBtn) enterAdminBtn.addEventListener('click', () => setView('admin'));
             if (workspaceSwitch) {
                 workspaceSwitch.addEventListener('change', () => {
-                    const next = workspaceSwitch.value;
-                    if (state.currentView === 'user' && next === 'admin') {
-                        workspaceSwitch.value = 'user';
-                        return;
-                    }
-                    setView(next);
+                    setView(workspaceSwitch.value);
                 });
             }
 
