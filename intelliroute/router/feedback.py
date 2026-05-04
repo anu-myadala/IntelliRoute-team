@@ -17,15 +17,58 @@ from typing import Callable, Optional
 Clock = Callable[[], float]
 
 
-# Canned-refusal phrases. Match anywhere, case-insensitively. The list is
-# intentionally short — false positives here just nudge the anomaly EMA, they
-# don't block routing — and skewed toward strings that almost never appear
-# inside a legitimate substantive answer.
+# Canned-refusal phrases. Match anywhere, case-insensitively. False positives
+# here just nudge the anomaly EMA — they don't block routing — so precision is
+# favoured over recall: only add patterns that almost never appear inside a
+# legitimate substantive answer.
+#
+# Patterns are grouped by the failure mode they detect:
+#
+#   AI identity disclaimers  — model revealing it is an AI when not asked
+#   Inability declarations   — explicit statement that the model cannot help
+#   Safety/policy refusals   — guardrail activation language
+#   Knowledge cutoff signals — model citing stale or absent training data
+#   Uncertainty hedges       — excessive hedging that often signals hallucination
+#
 _REFUSAL_PATTERNS = (
-    re.compile(r"\bi (?:cannot|can't|am unable to)\b", re.IGNORECASE),
+    # ---- AI identity disclaimers ----------------------------------------
+    # Phrase appears when a model reflexively identifies itself rather than
+    # answering; typically a sign the prompt triggered a safety guardrail.
     re.compile(r"\bas an ai (?:language )?model\b", re.IGNORECASE),
-    re.compile(r"\bi'?m sorry,? but\b", re.IGNORECASE),
+    re.compile(r"\bas an artificial intelligence\b", re.IGNORECASE),
+    re.compile(r"\bi am (?:just )?an ai\b", re.IGNORECASE),
+    re.compile(r"\bi'?m (?:just )?an ai\b", re.IGNORECASE),
+    re.compile(r"\bi am a (?:large )?language model\b", re.IGNORECASE),
+
+    # ---- Inability declarations ------------------------------------------
+    # Direct statements that the model will not or cannot complete the task.
+    re.compile(r"\bi (?:cannot|can't|am unable to)\b", re.IGNORECASE),
     re.compile(r"\bi (?:don'?t|do not) have (?:access|the ability)\b", re.IGNORECASE),
+    re.compile(r"\bi'?m not able to (?:provide|help|assist)\b", re.IGNORECASE),
+    re.compile(r"\bI cannot (?:provide|assist|help) with that\b", re.IGNORECASE),
+    re.compile(r"\bthat'?s (?:not|outside) (?:something )?i can\b", re.IGNORECASE),
+
+    # ---- Safety / policy refusals ----------------------------------------
+    # Language that appears when the model declines for policy reasons.
+    re.compile(r"\bi'?m sorry,? but\b", re.IGNORECASE),
+    re.compile(r"\bgoes against (?:my )?(?:guidelines|policy|values)\b", re.IGNORECASE),
+    re.compile(r"\bnot (?:programmed|designed|trained) to\b", re.IGNORECASE),
+    re.compile(r"\bI must (?:decline|refuse)\b", re.IGNORECASE),
+    re.compile(r"\bthis (?:request|topic) (?:is|falls) (?:outside|beyond)\b", re.IGNORECASE),
+
+    # ---- Knowledge cutoff / data-access signals --------------------------
+    # Indicates the model is substituting a refusal for missing knowledge;
+    # worth flagging because it often means the task needed a capable model.
+    re.compile(r"\bI don'?t have (?:real.?time|up.?to.?date)\b", re.IGNORECASE),
+    re.compile(r"\bmy (?:training )?(?:data|knowledge) (?:only goes|cuts off)\b", re.IGNORECASE),
+    re.compile(r"\bI (?:don'?t|do not) have information (?:about|on)\b", re.IGNORECASE),
+    re.compile(r"\bas of my (?:last |knowledge )?(?:update|cutoff)\b", re.IGNORECASE),
+
+    # ---- Excessive uncertainty hedges ------------------------------------
+    # A single hedge is fine; multiple in one response often signal the model
+    # is confabulating rather than reasoning from actual knowledge.
+    re.compile(r"\bI'?m not (?:entirely )?sure (?:I can|about)\b", re.IGNORECASE),
+    re.compile(r"\bI (?:believe|think) (?:I'?m not|this is not)\b", re.IGNORECASE),
 )
 
 

@@ -14,17 +14,111 @@ import re
 from ..common.models import ChatMessage, CompletionRequest, Intent
 
 
+# ---------------------------------------------------------------------------
+# Keyword hint sets used by the heuristic classifier.
+#
+# Design notes:
+#   - Strings are matched case-sensitively by default after lowercasing the
+#     joined prompt text, so all entries here must be lowercase.
+#   - Err on the side of recall over precision within each bucket: a
+#     misclassified intent degrades routing quality slightly; a missed
+#     classification falls through to INTERACTIVE which is safe.
+#   - Do NOT add generic English words (e.g. "how") — they produce too many
+#     false positives across intents.
+# ---------------------------------------------------------------------------
+
 _CODE_HINTS = (
-    "```", "def ", "class ", "function ", "import ", "const ", "let ",
-    "<html", "SELECT ", "select ", "stack trace", "traceback",
+    # Fenced code blocks and common language constructs.
+    "```",
+    "def ",        # Python function definition
+    "class ",      # class declaration (Python, Java, JS, TS, C++)
+    "function ",   # JavaScript / TypeScript function keyword
+    "import ",     # module import in Python, Java, JS/TS, etc.
+    "const ",      # JS/TS constant declaration
+    "let ",        # JS/TS block-scoped variable
+    "var ",        # JS legacy variable declaration
+    "<html",       # HTML markup fragments
+    "SELECT ",     # SQL uppercase convention
+    "select ",     # SQL (lowercase variant)
+    "stack trace", # error output preamble
+    "traceback",   # Python exception traceback
+    # Error-related keywords that almost exclusively appear in debugging prompts.
+    "syntax error",
+    "runtime error",
+    "null pointer",
+    "segmentation fault",
+    "compile error",
+    "linker error",
+    # Tool / package management — indicates a dev environment context.
+    "npm install",
+    "pip install",
+    "yarn add",
+    "cargo build",
+    # Common programming tasks.
+    "refactor",
+    "unit test",
+    "write a function",
+    "write a script",
+    "fix this code",
+    "debug this",
 )
+
 _REASONING_HINTS = (
-    "explain", "reason", "prove", "derive", "analyze", "analyse", "compare",
-    "step by step", "why ", "how does", "trade-off", "tradeoff",
+    # Core analytical verbs.
+    "explain",
+    "reason",
+    "prove",
+    "derive",
+    "analyze",
+    "analyse",
+    "compare",
+    "evaluate",
+    "critique",
+    "assess",
+    "infer",
+    "deduce",
+    "conclude",
+    # Multi-step reasoning phrases.
+    "step by step",
+    "chain of thought",
+    "think through",
+    "walk me through",
+    "break down",
+    # Causal / comparative constructs.
+    "why ",
+    "how does",
+    "what causes",
+    "what are the implications",
+    "pros and cons",
+    "advantages and disadvantages",
+    "compare and contrast",
+    "trade-off",
+    "tradeoff",
+    # Argumentative / academic framing.
+    "argue",
+    "justify",
+    "make the case",
+    "counter-argument",
 )
+
 _BATCH_HINTS = (
-    "summarize the following", "translate the following", "extract",
-    "generate a list of", "batch",
+    # Explicit bulk-processing prefixes.
+    "summarize the following",
+    "translate the following",
+    "extract",
+    "generate a list of",
+    "batch",
+    # Additional bulk-task patterns.
+    "process all",
+    "for each of the following",
+    "classify each",
+    "tag each",
+    "convert the following",
+    "parse the following",
+    "create a report",
+    "generate n ",    # e.g. "generate 10 examples of"
+    "bulk",
+    "transform the following",
 )
 
 
