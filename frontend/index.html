@@ -1595,9 +1595,16 @@
             border-color: rgba(248, 81, 73, 0.45);
         }
 
+        .user-feedback-pill.is-selected {
+            border-color: rgba(88, 166, 255, 0.7);
+            background: rgba(88, 166, 255, 0.18);
+            box-shadow: inset 0 0 0 1px rgba(88, 166, 255, 0.3);
+        }
+
         .user-feedback-pill:disabled,
         #ratingSelect:disabled,
-        #feedbackComment:disabled {
+        #feedbackComment:disabled,
+        #feedbackSubmitBtn:disabled {
             opacity: 0.45;
             cursor: not-allowed;
         }
@@ -5189,6 +5196,9 @@
                                     </select>
                                 </div>
                                 <input id="feedbackComment" class="user-feedback-input" type="text" placeholder="Optional comment" />
+                                <div style="margin-top:8px;">
+                                    <button type="button" id="feedbackSubmitBtn" class="user-ghost-btn">Submit feedback</button>
+                                </div>
                                 <div id="feedbackStatus" style="font-size:11px;color:var(--text-secondary);margin-top:8px;"></div>
                             </div>
                             <div class="user-new-prompt-row">
@@ -5828,6 +5838,8 @@
             lastCompletionMeta: null,
             /** request_id for which feedback was already submitted (one UI submit per response). */
             feedbackSubmittedRequestId: null,
+            /** Draft sentiment selected by Helpful / Not helpful before submit. */
+            feedbackDraftSentiment: null,
             feedbackSummary: null,
             feedbackRecent: [],
             feedbackAnalysis: null,
@@ -5883,6 +5895,7 @@
             const regenerateBtn = document.getElementById('regenerateBtn');
             const helpfulBtn = document.getElementById('helpfulBtn');
             const notHelpfulBtn = document.getElementById('notHelpfulBtn');
+            const feedbackSubmitBtn = document.getElementById('feedbackSubmitBtn');
             const adminIntentSelect = document.getElementById('adminIntentSelect');
             const intentSelect = document.getElementById('intentSelect');
             const exReloadBtn = document.getElementById('exReloadBtn');
@@ -5988,8 +6001,9 @@
                     setFeedbackStatus('Clipboard unavailable in this browser context.');
                 }
             });
-            if (helpfulBtn) helpfulBtn.addEventListener('click', () => submitFeedback('helpful'));
-            if (notHelpfulBtn) notHelpfulBtn.addEventListener('click', () => submitFeedback('not_helpful'));
+            if (helpfulBtn) helpfulBtn.addEventListener('click', () => setFeedbackSentiment('helpful'));
+            if (notHelpfulBtn) notHelpfulBtn.addEventListener('click', () => setFeedbackSentiment('not_helpful'));
+            if (feedbackSubmitBtn) feedbackSubmitBtn.addEventListener('click', () => submitFeedback());
             if (fbRefreshBtn) fbRefreshBtn.addEventListener('click', () => refreshFeedbackAdmin());
             if (fbAnalyzeBtn) fbAnalyzeBtn.addEventListener('click', () => analyzeFeedbackWithAI());
 
@@ -6041,6 +6055,7 @@
                 clearUserRunningAnim();
                 state.lastCompletionMeta = null;
                 state.feedbackSubmittedRequestId = null;
+                state.feedbackDraftSentiment = null;
                 setUserWorkspaceUIState('empty');
                 const fs = document.getElementById('feedbackStatus');
                 if (fs) fs.textContent = '';
@@ -6556,20 +6571,46 @@
             if (status) status.textContent = message;
         }
 
-        /** Enable feedback controls only when there is a completion and feedback not yet sent for that request_id. */
+        function setFeedbackSentiment(sentiment) {
+            const rid = state.lastCompletionMeta && state.lastCompletionMeta.request_id;
+            const locked = Boolean(rid && state.feedbackSubmittedRequestId === rid);
+            if (!rid || locked) return;
+            if (sentiment !== 'helpful' && sentiment !== 'not_helpful') return;
+            state.feedbackDraftSentiment = sentiment;
+            setFeedbackStatus('');
+            syncUserFeedbackFormState();
+        }
+
+        /** Enable feedback controls only when there is a successful completion and feedback not yet sent for that request_id. */
         function syncUserFeedbackFormState() {
             const rid = state.lastCompletionMeta && state.lastCompletionMeta.request_id;
             const locked = Boolean(rid && state.feedbackSubmittedRequestId === rid);
-            const noCompletion = !rid;
-            const disable = noCompletion || locked;
+            const canGiveFeedback = Boolean(
+                rid
+                && state.lastCompletionMeta
+                && state.lastCompletionMeta.provider
+                && state.lastResponse
+            );
+            const disableInputs = !canGiveFeedback || locked;
             const helpfulBtn = document.getElementById('helpfulBtn');
             const notHelpfulBtn = document.getElementById('notHelpfulBtn');
             const ratingSelect = document.getElementById('ratingSelect');
             const feedbackComment = document.getElementById('feedbackComment');
-            if (helpfulBtn) helpfulBtn.disabled = disable;
-            if (notHelpfulBtn) notHelpfulBtn.disabled = disable;
-            if (ratingSelect) ratingSelect.disabled = disable;
-            if (feedbackComment) feedbackComment.disabled = disable;
+            const submitBtn = document.getElementById('feedbackSubmitBtn');
+            if (helpfulBtn) {
+                helpfulBtn.disabled = disableInputs;
+                helpfulBtn.classList.toggle('is-selected', state.feedbackDraftSentiment === 'helpful');
+            }
+            if (notHelpfulBtn) {
+                notHelpfulBtn.disabled = disableInputs;
+                notHelpfulBtn.classList.toggle('is-selected', state.feedbackDraftSentiment === 'not_helpful');
+            }
+            if (ratingSelect) ratingSelect.disabled = disableInputs;
+            if (feedbackComment) feedbackComment.disabled = disableInputs;
+            if (submitBtn) submitBtn.disabled = disableInputs || !state.feedbackDraftSentiment || feedbackSubmitInFlight;
+            if (!canGiveFeedback && state.userUiState === 'result') {
+                setFeedbackStatus('Feedback unavailable for failed run.');
+            }
         }
 
         function openUserHistoryDrawer() {
@@ -6666,6 +6707,7 @@
             if (state.currentView === 'user') {
                 state.lastCompletionMeta = null;
                 state.feedbackSubmittedRequestId = null;
+                state.feedbackDraftSentiment = null;
                 const fs = document.getElementById('feedbackStatus');
                 if (fs) fs.textContent = '';
                 const rs = document.getElementById('ratingSelect');
@@ -6678,12 +6720,17 @@
             }
         }
 
-        function submitFeedback(sentiment) {
+        function submitFeedback() {
             const rating = document.getElementById('ratingSelect').value;
             const comment = document.getElementById('feedbackComment').value.trim();
             const reqId = state.lastCompletionMeta && state.lastCompletionMeta.request_id;
+            const sentiment = state.feedbackDraftSentiment;
             if (!reqId) {
                 setFeedbackStatus('Submit a completion first, then send feedback.');
+                return;
+            }
+            if (!sentiment) {
+                setFeedbackStatus('Choose Helpful or Not helpful, then submit.');
                 return;
             }
             if (state.feedbackSubmittedRequestId === reqId) {
@@ -6693,6 +6740,7 @@
                 return;
             }
             feedbackSubmitInFlight = true;
+            syncUserFeedbackFormState();
             fetch(`${API_BASE}/v1/feedback`, {
                 method: 'POST',
                 headers: {
@@ -6723,6 +6771,7 @@
                 })
                 .finally(() => {
                     feedbackSubmitInFlight = false;
+                    syncUserFeedbackFormState();
                 });
         }
 
@@ -7186,6 +7235,12 @@
             if (isUser) {
                 state.lastCompletionMeta = null;
                 state.feedbackSubmittedRequestId = null;
+                state.feedbackDraftSentiment = null;
+                setFeedbackStatus('');
+                const rs = document.getElementById('ratingSelect');
+                const fc = document.getElementById('feedbackComment');
+                if (rs) rs.value = '';
+                if (fc) fc.value = '';
                 syncUserFeedbackFormState();
                 setUserWorkspaceUIState('running');
                 const rp = document.getElementById('userRunningPrompt');
@@ -7277,7 +7332,9 @@
                     if (pr) pr.textContent = state.lastPrompt || content;
                     setUserWorkspaceUIState('result');
                 }
+                state.feedbackDraftSentiment = null;
                 updateUserResponse({ content: `Error: ${error.message}`, provider: null, latency_ms: null, fallback_used: false });
+                syncUserFeedbackFormState();
                 addEvent('error', `Request failed: ${error.message}`);
                 state.lastAdminTrace = {
                     sentAt: Date.now(),
