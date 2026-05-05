@@ -21,7 +21,15 @@ def _p(name: str) -> ProviderInfo:
 
 @pytest.fixture
 def base_settings() -> Settings:
-    return Settings()
+    """Isolate from developer `.env` (e.g. INTELLIROUTE_USE_MOCKS, API keys, provider_mode)."""
+    s = Settings()
+    return replace(
+        s,
+        use_mock_providers=False,
+        provider_mode="auto",
+        groq_api_key="",
+        gemini_api_key="",
+    )
 
 
 def test_normalize_provider_mode_invalid_returns_auto() -> None:
