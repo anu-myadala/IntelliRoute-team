@@ -24,7 +24,7 @@ def mock_provider_info(name: str, host: str, port: int) -> ProviderInfo:
             provider_type="mock",
             capability={"interactive": 0.85, "reasoning": 0.45, "batch": 0.5, "code": 0.6},
             cost_per_1k_tokens=0.002,
-            typical_latency_ms=120,
+            typical_latency_ms=30,
             capability_tier=2,
         )
     if name == "mock-smart":
@@ -35,7 +35,7 @@ def mock_provider_info(name: str, host: str, port: int) -> ProviderInfo:
             provider_type="mock",
             capability={"interactive": 0.7, "reasoning": 0.95, "batch": 0.8, "code": 0.9},
             cost_per_1k_tokens=0.02,
-            typical_latency_ms=900,
+            typical_latency_ms=120,
             capability_tier=3,
         )
     if name == "mock-cheap":
@@ -46,7 +46,7 @@ def mock_provider_info(name: str, host: str, port: int) -> ProviderInfo:
             provider_type="mock",
             capability={"interactive": 0.55, "reasoning": 0.4, "batch": 0.75, "code": 0.45},
             cost_per_1k_tokens=0.0003,
-            typical_latency_ms=600,
+            typical_latency_ms=80,
             capability_tier=1,
         )
     raise ValueError(f"unknown mock provider name: {name!r}")
