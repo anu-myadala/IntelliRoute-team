@@ -88,6 +88,21 @@ class Settings:
     )
     provider_quota_warn_ratio: float = _env_float("INTELLIROUTE_PROVIDER_QUOTA_WARN_RATIO", 0.7)
 
+    user_feedback_db_path: str = os.environ.get(
+        "INTELLIROUTE_USER_FEEDBACK_DB_PATH", "artifacts/user_feedback.sqlite3"
+    )
+    feedback_prompt_preview_chars: int = _env_int("INTELLIROUTE_FEEDBACK_PROMPT_PREVIEW_CHARS", 200)
+    feedback_response_preview_chars: int = _env_int(
+        "INTELLIROUTE_FEEDBACK_RESPONSE_PREVIEW_CHARS", 300
+    )
+    feedback_analysis_default_rows: int = _env_int(
+        "INTELLIROUTE_FEEDBACK_ANALYSIS_DEFAULT_ROWS", 100
+    )
+    feedback_analysis_max_rows: int = _env_int("INTELLIROUTE_FEEDBACK_ANALYSIS_MAX_ROWS", 500)
+    feedback_analysis_sample_pool_max: int = _env_int(
+        "INTELLIROUTE_FEEDBACK_ANALYSIS_SAMPLE_POOL_MAX", 20000
+    )
+
     @property
     def router_url(self) -> str:
         return f"http://{self.host}:{self.router_port}"

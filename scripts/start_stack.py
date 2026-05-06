@@ -169,7 +169,19 @@ def main() -> int:
                 host,
             ]
             print(f"starting frontend on :{frontend_port}")
-            procs.append(subprocess.Popen(frontend_cmd, env=base_env, cwd=str(ROOT)))
+            fe_proc = subprocess.Popen(frontend_cmd, env=base_env, cwd=str(ROOT))
+            procs.append(fe_proc)
+            time.sleep(0.6)
+            if fe_proc.poll() is not None:
+                print(
+                    f"\nERROR: Static frontend exited immediately (exit {fe_proc.returncode}). "
+                    f"Port {frontend_port} is probably already in use (Errno 48).\n"
+                    f"  Fix: stop the other stack (Ctrl-C in that terminal) or free the port, e.g.:\n"
+                    f"    lsof -nP -iTCP:{frontend_port} -sTCP:LISTEN\n"
+                    f"  Or use another port, then open that URL in the browser:\n"
+                    f"    INTELLIROUTE_FRONTEND_PORT=3005 PYTHONPATH=. python3 scripts/start_stack.py\n"
+                )
+                return 1
         print("\nIntelliRoute stack running.")
         _prov_label = (
             "external subprocesses skipped; router uses live APIs only"

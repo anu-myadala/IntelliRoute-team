@@ -1595,6 +1595,20 @@
             border-color: rgba(248, 81, 73, 0.45);
         }
 
+        .user-feedback-pill.is-selected {
+            border-color: rgba(88, 166, 255, 0.7);
+            background: rgba(88, 166, 255, 0.18);
+            box-shadow: inset 0 0 0 1px rgba(88, 166, 255, 0.3);
+        }
+
+        .user-feedback-pill:disabled,
+        #ratingSelect:disabled,
+        #feedbackComment:disabled,
+        #feedbackSubmitBtn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
         #ratingSelect.user-rating-select {
             min-width: 130px;
             border-radius: 10px;
@@ -1607,6 +1621,506 @@
             border-radius: 10px;
             padding: 10px 12px;
             font-size: 13px;
+        }
+
+        /* Admin Feedback tab — dashboard (do NOT use global .container: it is a 3-col full-viewport grid) */
+        .fb-dash-shell {
+            width: 100%;
+            max-width: 1320px;
+            margin: 0 auto;
+            padding: 12px 18px 28px;
+            box-sizing: border-box;
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        #adminTabFeedback.is-active {
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+        .fb-dash-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px 20px;
+            padding: 14px 16px;
+            border-radius: 12px;
+            flex-shrink: 0;
+        }
+        .fb-dash-title {
+            margin: 0 0 6px 0;
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        .fb-dash-sub {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.5;
+            max-width: 52ch;
+        }
+        .fb-dash-head-text {
+            flex: 1 1 240px;
+            min-width: 0;
+        }
+        .fb-dash-head-right {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px 14px;
+            min-width: 0;
+        }
+        .fb-dash-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px 10px;
+        }
+        .fb-dash-actions button,
+        .fb-dash-actions select {
+            font-size: 12px;
+        }
+        .fb-dash-select-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+        }
+        .fb-dash-select-label select {
+            padding: 6px 10px;
+            border-radius: 8px;
+        }
+        .fb-analyze-primary {
+            font-weight: 600;
+        }
+        .fb-toolbar-status {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-align: right;
+            max-width: 36ch;
+            line-height: 1.35;
+        }
+        .fb-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 10px;
+            align-items: start;
+            flex-shrink: 0;
+        }
+        @media (max-width: 960px) {
+            .fb-kpi-grid {
+                grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            }
+        }
+        .fb-kpi-card {
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(13, 17, 23, 0.55);
+            padding: 10px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .fb-kpi-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+        }
+        .fb-kpi-value {
+            font-size: 1.35rem;
+            font-weight: 700;
+            line-height: 1.2;
+            color: var(--text-primary);
+        }
+        .fb-kpi-hint {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+            line-height: 1.3;
+        }
+        .fb-dash-split {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 14px;
+            align-items: start;
+            min-width: 0;
+        }
+        @media (min-width: 900px) {
+            .fb-dash-split {
+                grid-template-columns: minmax(0, 65%) minmax(0, 35%);
+            }
+        }
+        .fb-dash-primary,
+        .fb-dash-aside {
+            min-width: 0;
+        }
+        .fb-dash-aside {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .fb-panel {
+            padding: 14px 16px;
+            border-radius: 12px;
+        }
+        .fb-panel-head-row {
+            margin-bottom: 12px;
+        }
+        .fb-recent-panel .fb-section-title {
+            margin: 0 0 4px 0;
+        }
+        .fb-recent-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 12px 18px;
+            margin-bottom: 12px;
+        }
+        .fb-recent-head-text {
+            flex: 1 1 220px;
+            min-width: 0;
+        }
+        .fb-recent-head-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-end;
+            gap: 10px 12px;
+            flex: 1 1 280px;
+            justify-content: flex-end;
+        }
+        .fb-recent-head-toolbar .fb-search-input {
+            flex: 1 1 180px;
+            min-width: 140px;
+            max-width: 100%;
+        }
+        .fb-section-title {
+            margin: 0 0 4px 0;
+            font-size: 15px;
+        }
+        .fb-section-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+        .fb-filters {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-end;
+            gap: 10px 12px;
+            margin-bottom: 10px;
+        }
+        .fb-search-input {
+            flex: 1 1 200px;
+            min-width: 0;
+            padding: 8px 11px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(1, 4, 9, 0.45);
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+        .fb-filter-label {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 11px;
+        }
+        .fb-filter-label select {
+            padding: 6px 10px;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        .fb-pager {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .fb-pager--foot {
+            margin-top: 12px;
+            margin-bottom: 0;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .fb-page-info {
+            font-size: 12px;
+        }
+        .fb-pager-btns {
+            display: flex;
+            gap: 8px;
+        }
+        .fb-pager-btns button {
+            font-size: 12px;
+            padding: 6px 12px;
+        }
+        .fb-recent-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .fb-card {
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(13, 17, 23, 0.5);
+        }
+        .fb-card-top {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px 8px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .fb-card-top-meta {
+            margin-left: auto;
+            font-size: 11px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .fb-rating-inline {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .fb-card-body {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .fb-card-foot {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 14px;
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .fb-card-foot strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        .fb-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            padding: 3px 8px;
+            border-radius: 999px;
+            text-transform: capitalize;
+        }
+        .fb-badge--pos {
+            background: rgba(46, 160, 67, 0.22);
+            color: #3fb950;
+            border: 1px solid rgba(63, 185, 80, 0.35);
+        }
+        .fb-badge--neg {
+            background: rgba(248, 81, 73, 0.15);
+            color: #f85149;
+            border: 1px solid rgba(248, 81, 73, 0.35);
+        }
+        .fb-chip {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 6px;
+            background: rgba(110, 118, 129, 0.2);
+            color: var(--text-secondary);
+        }
+        .fb-block-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 2px;
+        }
+        .fb-block-text {
+            font-size: 12px;
+            line-height: 1.45;
+            color: var(--text-primary);
+        }
+        .fb-block-text.muted-unavail {
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+        .fb-bd-card {
+            padding: 12px 14px;
+        }
+        .fb-bd-empty {
+            margin: 0;
+            font-size: 12px;
+        }
+        .fb-intent-provider-panel .fb-ip-hint {
+            font-size: 11px;
+            margin: 0 0 8px 0;
+            line-height: 1.35;
+        }
+        .fb-ip-intent {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: capitalize;
+            color: var(--text-primary);
+            margin: 10px 0 4px;
+            letter-spacing: 0.02em;
+        }
+        .fb-intent-provider-panel .fb-ip-intent:first-of-type {
+            margin-top: 2px;
+        }
+        .fb-ip-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 40px auto;
+            gap: 4px 8px;
+            align-items: baseline;
+            font-size: 11px;
+            padding: 3px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .fb-ip-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+        }
+        .fb-ip-sat {
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+            text-align: right;
+            color: var(--text-primary);
+        }
+        .fb-ip-counts {
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            font-size: 10px;
+        }
+        .fb-bd-title {
+            font-size: 12px;
+            font-weight: 700;
+            margin: 0 0 8px 0;
+            color: var(--text-primary);
+        }
+        .fb-bar-row {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 8px;
+            font-size: 11px;
+        }
+        .fb-bar-row:last-child {
+            margin-bottom: 0;
+        }
+        .fb-bar-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-width: 0;
+        }
+        .fb-bar-name {
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+        }
+        .fb-bar-pct {
+            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+        .fb-bar-track {
+            width: 100%;
+            height: 6px;
+            border-radius: 4px;
+            background: rgba(110, 118, 129, 0.18);
+            overflow: hidden;
+        }
+        .fb-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            background: linear-gradient(90deg, rgba(63, 185, 80, 0.55), rgba(88, 166, 255, 0.65));
+            min-width: 2px;
+            transition: width 0.2s ease;
+        }
+        .fb-ai-panel {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            max-height: min(70vh, 520px);
+        }
+        .fb-ai-title {
+            margin: 0;
+        }
+        .fb-ai-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px 12px;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }
+        .fb-analysis-subline {
+            margin: 4px 0 0 0;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        .fb-cached-pill {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: rgba(88, 166, 255, 0.15);
+            color: #58a6ff;
+            border: 1px solid rgba(88, 166, 255, 0.35);
+            flex-shrink: 0;
+        }
+        .fb-analysis-empty {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            padding: 6px 0 4px;
+            flex-shrink: 0;
+        }
+        .fb-analysis-wrap {
+            flex: 1 1 auto;
+            min-height: 120px;
+            max-height: 360px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .fb-analysis-body {
+            margin: 0;
+            flex: 1 1 auto;
+            min-height: 0;
+            padding: 12px;
+            border-radius: 8px;
+            background: rgba(1, 4, 9, 0.55);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            font-size: 13px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow: auto;
+        }
+        .fb-analysis-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 8px;
+            flex-shrink: 0;
         }
 
         .user-new-prompt-row {
@@ -4682,6 +5196,9 @@
                                     </select>
                                 </div>
                                 <input id="feedbackComment" class="user-feedback-input" type="text" placeholder="Optional comment" />
+                                <div style="margin-top:8px;">
+                                    <button type="button" id="feedbackSubmitBtn" class="user-ghost-btn">Submit feedback</button>
+                                </div>
                                 <div id="feedbackStatus" style="font-size:11px;color:var(--text-secondary);margin-top:8px;"></div>
                             </div>
                             <div class="user-new-prompt-row">
@@ -4699,6 +5216,7 @@
                     <button type="button" class="admin-tab" data-admin-tab="providers">Providers</button>
                     <button type="button" class="admin-tab" data-admin-tab="trace">Live trace</button>
                     <button type="button" class="admin-tab" data-admin-tab="ops">Live ops</button>
+                    <button type="button" class="admin-tab" data-admin-tab="feedback">Feedback</button>
                     <button type="button" class="admin-tab" data-admin-tab="experiments">Experiments</button>
                 </nav>
 
@@ -4998,6 +5516,92 @@
                     </div>
                 </div>
 
+                <div id="adminTabFeedback" class="admin-tab-panel fb-dash">
+                    <div class="fb-dash-shell">
+                        <header class="fb-dash-head glass">
+                            <div class="fb-dash-head-text">
+                                <h2 class="fb-dash-title">User feedback insights</h2>
+                                <p class="fb-dash-sub muted">Thumbs-up/down feedback with optional comments. AI analysis runs only when you click the button and uses the same IntelliRoute provider path as completions.</p>
+                            </div>
+                            <div class="fb-dash-head-right">
+                                <div class="fb-dash-actions" role="toolbar" aria-label="Feedback actions">
+                                    <button type="button" id="fbRefreshBtn">Refresh</button>
+                                    <label class="fb-dash-select-label muted">
+                                        Sample size
+                                        <select id="fbAnalysisSampleSize" aria-label="Analysis sample size">
+                                            <option value="100" selected>100</option>
+                                            <option value="250">250</option>
+                                            <option value="500">500</option>
+                                        </select>
+                                    </label>
+                                    <button type="button" id="fbAnalyzeBtn" class="fb-analyze-primary">Analyze Feedback with AI</button>
+                                </div>
+                                <span id="fbStatus" class="fb-toolbar-status" aria-live="polite"></span>
+                            </div>
+                        </header>
+
+                        <div id="fbKpiGrid" class="fb-kpi-grid" aria-label="Feedback KPIs"></div>
+
+                        <div class="fb-dash-split">
+                            <div class="fb-dash-primary">
+                                <section class="fb-panel glass fb-recent-panel">
+                                    <div class="fb-recent-head">
+                                        <div class="fb-recent-head-text">
+                                            <h3 class="fb-section-title">Recent feedback (newest first)</h3>
+                                            <p class="fb-section-hint">Search and filters apply to rows loaded from the server (up to 500).</p>
+                                        </div>
+                                        <div class="fb-recent-head-toolbar" role="search">
+                                            <input type="search" id="fbListSearch" class="fb-search-input" placeholder="Search prompt, comment, provider, model…" autocomplete="off" />
+                                            <label class="muted fb-filter-label">Rating
+                                                <select id="fbRatingFilter" aria-label="Filter by rating">
+                                                    <option value="all" selected>All</option>
+                                                    <option value="positive">Positive</option>
+                                                    <option value="negative">Negative</option>
+                                                </select>
+                                            </label>
+                                            <label class="muted fb-filter-label">Page size
+                                                <select id="fbPageSizeSelect" aria-label="Rows per page">
+                                                    <option value="10" selected>10</option>
+                                                    <option value="25">25</option>
+                                                    <option value="50">50</option>
+                                                </select>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div id="fbRecent" class="fb-recent-list muted">No feedback yet.</div>
+                                    <div class="fb-pager fb-pager--foot" aria-label="Pagination">
+                                        <span id="fbPageInfo" class="fb-page-info muted"></span>
+                                        <div class="fb-pager-btns">
+                                            <button type="button" id="fbPagePrev">Previous</button>
+                                            <button type="button" id="fbPageNext">Next</button>
+                                        </div>
+                                    </div>
+                                </section>
+                            </div>
+                            <aside class="fb-dash-aside">
+                                <section id="fbBreakdownProvider" class="fb-panel glass fb-bd-card" aria-label="Provider satisfaction"></section>
+                                <section id="fbBreakdownIntent" class="fb-panel glass fb-bd-card" aria-label="Intent satisfaction"></section>
+                                <section id="fbBreakdownModel" class="fb-panel glass fb-bd-card" aria-label="Model satisfaction"></section>
+                                <section id="fbIntentProvider" class="fb-panel glass fb-bd-card fb-intent-provider-panel" aria-label="Provider by intent"></section>
+                                <section class="fb-panel glass fb-ai-panel">
+                                    <div class="fb-ai-head">
+                                        <div>
+                                            <h3 class="fb-section-title fb-ai-title">AI analysis</h3>
+                                            <p id="fbAnalysisSubline" class="fb-analysis-subline muted"></p>
+                                        </div>
+                                        <span id="fbAnalysisCachedPill" class="fb-cached-pill" style="display:none;">Cached result</span>
+                                    </div>
+                                    <div id="fbAnalysisEmpty" class="fb-analysis-empty">No analysis yet. Choose a sample size and click Analyze Feedback with AI.</div>
+                                    <div id="fbAnalysisWrap" class="fb-analysis-wrap" style="display:none;">
+                                        <pre id="fbAnalysis" class="fb-analysis-body"></pre>
+                                    </div>
+                                    <div id="fbAnalysisMeta" class="fb-analysis-meta" style="display:none;"></div>
+                                </section>
+                            </aside>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="adminTabExperiments" class="admin-tab-panel">
                     <div class="ex-root">
                         <header class="ex-head">
@@ -5230,11 +5834,35 @@
             exRun: 'latest',
             exSourceLabel: '',
             exLoading: false,
-            exError: null
+            exError: null,
+            lastCompletionMeta: null,
+            /** request_id for which feedback was already submitted (one UI submit per response). */
+            feedbackSubmittedRequestId: null,
+            /** Draft sentiment selected by Helpful / Not helpful before submit. */
+            feedbackDraftSentiment: null,
+            feedbackSummary: null,
+            feedbackRecent: [],
+            feedbackAnalysis: null,
+            feedbackAnalysisMeta: {
+                cached: false,
+                analysisLimit: null,
+                requestedLimit: null,
+                limitCapped: false,
+                analysisProvider: null,
+                analysisModel: null
+            },
+            /** Client-side list UI for admin feedback tab. */
+            feedbackUi: {
+                page: 1,
+                pageSize: 10,
+                filterText: '',
+                filterRating: 'all'
+            }
         };
 
         let metricsIntervalId = null;
         let sendInFlight = false;
+        let feedbackSubmitInFlight = false;
         let userRunningIntervalId = null;
 
         function init() {
@@ -5248,6 +5876,7 @@
             renderProvidersScreen();
             renderCostQuotasScreen();
             renderLiveOpsScreen();
+            renderFeedbackScreen();
             renderExperimentsScreen();
             addEvent('success', 'System initialized');
 
@@ -5266,10 +5895,13 @@
             const regenerateBtn = document.getElementById('regenerateBtn');
             const helpfulBtn = document.getElementById('helpfulBtn');
             const notHelpfulBtn = document.getElementById('notHelpfulBtn');
+            const feedbackSubmitBtn = document.getElementById('feedbackSubmitBtn');
             const adminIntentSelect = document.getElementById('adminIntentSelect');
             const intentSelect = document.getElementById('intentSelect');
             const exReloadBtn = document.getElementById('exReloadBtn');
             const exFileInput = document.getElementById('exFileInput');
+            const fbRefreshBtn = document.getElementById('fbRefreshBtn');
+            const fbAnalyzeBtn = document.getElementById('fbAnalyzeBtn');
 
             document.querySelectorAll('.user-mode-pill').forEach((btn) => {
                 btn.addEventListener('click', () => {
@@ -5369,17 +6001,69 @@
                     setFeedbackStatus('Clipboard unavailable in this browser context.');
                 }
             });
-            if (helpfulBtn) helpfulBtn.addEventListener('click', () => submitFeedback('helpful'));
-            if (notHelpfulBtn) notHelpfulBtn.addEventListener('click', () => submitFeedback('not_helpful'));
+            if (helpfulBtn) helpfulBtn.addEventListener('click', () => setFeedbackSentiment('helpful'));
+            if (notHelpfulBtn) notHelpfulBtn.addEventListener('click', () => setFeedbackSentiment('not_helpful'));
+            if (feedbackSubmitBtn) feedbackSubmitBtn.addEventListener('click', () => submitFeedback());
+            if (fbRefreshBtn) fbRefreshBtn.addEventListener('click', () => refreshFeedbackAdmin());
+            if (fbAnalyzeBtn) fbAnalyzeBtn.addEventListener('click', () => analyzeFeedbackWithAI());
+
+            const fbListSearch = document.getElementById('fbListSearch');
+            const fbRatingFilter = document.getElementById('fbRatingFilter');
+            const fbPageSizeSelect = document.getElementById('fbPageSizeSelect');
+            const fbPagePrev = document.getElementById('fbPagePrev');
+            const fbPageNext = document.getElementById('fbPageNext');
+            if (fbListSearch) {
+                fbListSearch.addEventListener('input', () => {
+                    state.feedbackUi.filterText = fbListSearch.value;
+                    state.feedbackUi.page = 1;
+                    renderFeedbackScreen();
+                });
+            }
+            if (fbRatingFilter) {
+                fbRatingFilter.addEventListener('change', () => {
+                    state.feedbackUi.filterRating = fbRatingFilter.value || 'all';
+                    state.feedbackUi.page = 1;
+                    renderFeedbackScreen();
+                });
+            }
+            if (fbPageSizeSelect) {
+                fbPageSizeSelect.addEventListener('change', () => {
+                    const v = parseInt(fbPageSizeSelect.value, 10);
+                    state.feedbackUi.pageSize = [10, 25, 50].includes(v) ? v : 10;
+                    state.feedbackUi.page = 1;
+                    renderFeedbackScreen();
+                });
+            }
+            if (fbPagePrev) {
+                fbPagePrev.addEventListener('click', () => {
+                    state.feedbackUi.page = Math.max(1, state.feedbackUi.page - 1);
+                    renderFeedbackScreen();
+                });
+            }
+            if (fbPageNext) {
+                fbPageNext.addEventListener('click', () => {
+                    const filtered = fbGetFilteredFeedbackRows();
+                    const ps = Math.max(1, parseInt(state.feedbackUi.pageSize, 10) || 10);
+                    const pages = Math.max(1, Math.ceil(filtered.length / ps));
+                    state.feedbackUi.page = Math.min(pages, state.feedbackUi.page + 1);
+                    renderFeedbackScreen();
+                });
+            }
 
             const newPromptBtn = document.getElementById('userNewPromptBtn');
             if (newPromptBtn) newPromptBtn.addEventListener('click', () => {
                 clearUserRunningAnim();
+                state.lastCompletionMeta = null;
+                state.feedbackSubmittedRequestId = null;
+                state.feedbackDraftSentiment = null;
                 setUserWorkspaceUIState('empty');
                 const fs = document.getElementById('feedbackStatus');
                 if (fs) fs.textContent = '';
-                document.getElementById('ratingSelect').value = '';
-                document.getElementById('feedbackComment').value = '';
+                const rs = document.getElementById('ratingSelect');
+                const fc = document.getElementById('feedbackComment');
+                if (rs) rs.value = '';
+                if (fc) fc.value = '';
+                syncUserFeedbackFormState();
                 messageInput.focus();
             });
 
@@ -5418,6 +6102,7 @@
                 });
             }
 
+            syncUserFeedbackFormState();
             setView('welcome');
         }
 
@@ -5527,17 +6212,20 @@
             const pv = document.getElementById('adminTabProviders');
             const tr = document.getElementById('adminTabTrace');
             const ops = document.getElementById('adminTabOps');
+            const fb = document.getElementById('adminTabFeedback');
             const ex = document.getElementById('adminTabExperiments');
             if (ov) ov.classList.toggle('is-active', tab === 'overview');
             if (cq) cq.classList.toggle('is-active', tab === 'cost');
             if (pv) pv.classList.toggle('is-active', tab === 'providers');
             if (tr) tr.classList.toggle('is-active', tab === 'trace');
             if (ops) ops.classList.toggle('is-active', tab === 'ops');
+            if (fb) fb.classList.toggle('is-active', tab === 'feedback');
             if (ex) ex.classList.toggle('is-active', tab === 'experiments');
             if (tab === 'trace') renderLiveTrace();
             if (tab === 'cost') renderCostQuotasScreen();
             if (tab === 'providers') renderProvidersScreen();
             if (tab === 'ops') renderLiveOpsScreen();
+            if (tab === 'feedback') refreshFeedbackAdmin();
             if (tab === 'experiments') {
                 if (!state.exAggregate && !state.exLoading) {
                     loadExperimentsData();
@@ -5883,6 +6571,48 @@
             if (status) status.textContent = message;
         }
 
+        function setFeedbackSentiment(sentiment) {
+            const rid = state.lastCompletionMeta && state.lastCompletionMeta.request_id;
+            const locked = Boolean(rid && state.feedbackSubmittedRequestId === rid);
+            if (!rid || locked) return;
+            if (sentiment !== 'helpful' && sentiment !== 'not_helpful') return;
+            state.feedbackDraftSentiment = sentiment;
+            setFeedbackStatus('');
+            syncUserFeedbackFormState();
+        }
+
+        /** Enable feedback controls only when there is a successful completion and feedback not yet sent for that request_id. */
+        function syncUserFeedbackFormState() {
+            const rid = state.lastCompletionMeta && state.lastCompletionMeta.request_id;
+            const locked = Boolean(rid && state.feedbackSubmittedRequestId === rid);
+            const canGiveFeedback = Boolean(
+                rid
+                && state.lastCompletionMeta
+                && state.lastCompletionMeta.provider
+                && state.lastResponse
+            );
+            const disableInputs = !canGiveFeedback || locked;
+            const helpfulBtn = document.getElementById('helpfulBtn');
+            const notHelpfulBtn = document.getElementById('notHelpfulBtn');
+            const ratingSelect = document.getElementById('ratingSelect');
+            const feedbackComment = document.getElementById('feedbackComment');
+            const submitBtn = document.getElementById('feedbackSubmitBtn');
+            if (helpfulBtn) {
+                helpfulBtn.disabled = disableInputs;
+                helpfulBtn.classList.toggle('is-selected', state.feedbackDraftSentiment === 'helpful');
+            }
+            if (notHelpfulBtn) {
+                notHelpfulBtn.disabled = disableInputs;
+                notHelpfulBtn.classList.toggle('is-selected', state.feedbackDraftSentiment === 'not_helpful');
+            }
+            if (ratingSelect) ratingSelect.disabled = disableInputs;
+            if (feedbackComment) feedbackComment.disabled = disableInputs;
+            if (submitBtn) submitBtn.disabled = disableInputs || !state.feedbackDraftSentiment || feedbackSubmitInFlight;
+            if (!canGiveFeedback && state.userUiState === 'result') {
+                setFeedbackStatus('Feedback unavailable for failed run.');
+            }
+        }
+
         function openUserHistoryDrawer() {
             closeAccountDropdown();
             const d = document.getElementById('userHistoryDrawer');
@@ -5975,17 +6705,507 @@
             syncIntentPillsFromSelect();
             closeUserHistoryDrawer();
             if (state.currentView === 'user') {
+                state.lastCompletionMeta = null;
+                state.feedbackSubmittedRequestId = null;
+                state.feedbackDraftSentiment = null;
+                const fs = document.getElementById('feedbackStatus');
+                if (fs) fs.textContent = '';
+                const rs = document.getElementById('ratingSelect');
+                const fc = document.getElementById('feedbackComment');
+                if (rs) rs.value = '';
+                if (fc) fc.value = '';
+                syncUserFeedbackFormState();
                 setUserWorkspaceUIState('empty');
                 setTimeout(() => { if (mi) mi.focus(); }, 0);
             }
         }
 
-        function submitFeedback(sentiment) {
+        function submitFeedback() {
             const rating = document.getElementById('ratingSelect').value;
             const comment = document.getElementById('feedbackComment').value.trim();
-            setFeedbackStatus(
-                `Feedback saved locally: ${sentiment}${rating ? `, rating ${rating}/5` : ''}${comment ? ', with comment.' : '.'}`
-            );
+            const reqId = state.lastCompletionMeta && state.lastCompletionMeta.request_id;
+            const sentiment = state.feedbackDraftSentiment;
+            if (!reqId) {
+                setFeedbackStatus('Submit a completion first, then send feedback.');
+                return;
+            }
+            if (!sentiment) {
+                setFeedbackStatus('Choose Helpful or Not helpful, then submit.');
+                return;
+            }
+            if (state.feedbackSubmittedRequestId === reqId) {
+                return;
+            }
+            if (feedbackSubmitInFlight) {
+                return;
+            }
+            feedbackSubmitInFlight = true;
+            syncUserFeedbackFormState();
+            fetch(`${API_BASE}/v1/feedback`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': 'demo-key-123',
+                },
+                body: JSON.stringify({
+                    request_id: reqId,
+                    rating: sentiment,
+                    comment: comment || (rating ? `rating:${rating}` : ''),
+                }),
+            })
+                .then(async (r) => {
+                    if (!r.ok) {
+                        const err = await r.json().catch(() => ({}));
+                        throw new Error(err.detail || `feedback request failed (${r.status})`);
+                    }
+                    return r.json();
+                })
+                .then(() => {
+                    state.feedbackSubmittedRequestId = reqId;
+                    syncUserFeedbackFormState();
+                    setFeedbackStatus('Feedback recorded.');
+                    refreshFeedbackAdmin();
+                })
+                .catch((e) => {
+                    setFeedbackStatus(`Unable to submit feedback: ${e.message || e}`);
+                })
+                .finally(() => {
+                    feedbackSubmitInFlight = false;
+                    syncUserFeedbackFormState();
+                });
+        }
+
+        function fbParseNumericRating(comment) {
+            if (!comment || typeof comment !== 'string') return null;
+            const m = comment.match(/rating:\s*(\d)/i);
+            if (!m) return null;
+            const n = parseInt(m[1], 10);
+            if (Number.isNaN(n) || n < 1 || n > 5) return null;
+            return n;
+        }
+
+        function fbCommentDisplay(comment) {
+            if (!comment || typeof comment !== 'string') return '(no comment)';
+            const stripped = comment.replace(/^\s*rating:\d+\s*/i, '').trim();
+            return stripped || '(no comment)';
+        }
+
+        function fbFormatFeedbackWhen(ts) {
+            if (typeof ts !== 'number' || !Number.isFinite(ts)) return '';
+            const d = new Date(ts * 1000);
+            if (Number.isNaN(d.getTime())) return '';
+            return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+        }
+
+        function fbRequestIdLine(rid) {
+            const s = String(rid || '').trim();
+            if (!s) return 'req —';
+            if (s.length <= 14) return `req ${escapeHtml(s)}`;
+            return `req ${escapeHtml(s.slice(0, 8))}…`;
+        }
+
+        function fbHasVisibleComment(comment) {
+            const d = fbCommentDisplay(comment);
+            return d && d !== '(no comment)';
+        }
+
+        function fbAvgRatingFromRows(rows) {
+            const nums = (rows || []).map((r) => fbParseNumericRating(r.comment)).filter((n) => n != null);
+            if (!nums.length) return null;
+            return nums.reduce((a, b) => a + b, 0) / nums.length;
+        }
+
+        function fbGetFilteredFeedbackRows() {
+            let rows = [...(state.feedbackRecent || [])];
+            const q = (state.feedbackUi.filterText || '').trim().toLowerCase();
+            if (q) {
+                rows = rows.filter((r) => {
+                    const hay = [
+                        r.prompt_preview,
+                        r.response_preview,
+                        r.comment,
+                        r.provider,
+                        r.model,
+                        r.intent,
+                        r.request_id,
+                    ]
+                        .filter(Boolean)
+                        .join(' ')
+                        .toLowerCase();
+                    return hay.includes(q);
+                });
+            }
+            const rf = state.feedbackUi.filterRating;
+            if (rf === 'positive') {
+                rows = rows.filter((r) => (r.rating || '').toLowerCase() === 'positive');
+            } else if (rf === 'negative') {
+                rows = rows.filter((r) => (r.rating || '').toLowerCase() === 'negative');
+            }
+            return rows;
+        }
+
+        function fbClampFeedbackPage(totalFiltered) {
+            const ps = Math.max(1, parseInt(state.feedbackUi.pageSize, 10) || 10);
+            state.feedbackUi.pageSize = ps;
+            const pages = Math.max(1, Math.ceil(totalFiltered / ps));
+            if (state.feedbackUi.page > pages) state.feedbackUi.page = pages;
+            if (state.feedbackUi.page < 1) state.feedbackUi.page = 1;
+        }
+
+        function fbBreakdownLabel(key) {
+            const s = String(key || '').trim();
+            return s || '(unknown)';
+        }
+
+        function fbSortedBucketEntries(bucket) {
+            if (!bucket || typeof bucket !== 'object') return [];
+            return Object.entries(bucket)
+                .map(([k, v]) => ({ key: k, v: v || {} }))
+                .sort((a, b) => (b.v.total || 0) - (a.v.total || 0))
+                .slice(0, 8);
+        }
+
+        function fbRenderBreakdownAside(sum) {
+            const provEl = document.getElementById('fbBreakdownProvider');
+            const intentEl = document.getElementById('fbBreakdownIntent');
+            const modelEl = document.getElementById('fbBreakdownModel');
+            if (!provEl || !intentEl || !modelEl) return;
+            const empty = '<p class="muted fb-bd-empty">Refresh to load satisfaction data.</p>';
+            if (!sum || !(sum.total_feedback > 0)) {
+                provEl.innerHTML = empty;
+                intentEl.innerHTML = empty;
+                modelEl.innerHTML = empty;
+                return;
+            }
+            provEl.innerHTML = fbRenderBreakdownBlock('Provider satisfaction', sum.by_provider);
+            intentEl.innerHTML = fbRenderBreakdownBlock('Intent satisfaction', sum.by_intent);
+            modelEl.innerHTML = fbRenderBreakdownBlock('Model satisfaction', sum.by_model);
+        }
+
+        function fbRenderBreakdownBlock(title, bucket) {
+            const rows = fbSortedBucketEntries(bucket);
+            if (!rows.length) {
+                return `<h4 class="fb-bd-title">${escapeHtml(title)}</h4><p class="muted fb-bd-empty">No data yet.</p>`;
+            }
+            const inner = rows
+                .map(({ key, v }) => {
+                    const sat = typeof v.satisfaction === 'number' ? v.satisfaction : 0;
+                    const pct = Math.round(Math.max(0, Math.min(1, sat)) * 100);
+                    const w = Math.max(0, Math.min(100, pct));
+                    const name = fbBreakdownLabel(key);
+                    return `<div class="fb-bar-row"><div class="fb-bar-line"><span class="fb-bar-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="fb-bar-pct">${pct}%</span></div><div class="fb-bar-track" aria-hidden="true"><div class="fb-bar-fill" style="width:${w}%"></div></div></div>`;
+                })
+                .join('');
+            return `<h4 class="fb-bd-title">${escapeHtml(title)}</h4>${inner}`;
+        }
+
+        function fbRenderIntentProviderPanel(sum) {
+            const el = document.getElementById('fbIntentProvider');
+            if (!el) return;
+            if (!sum || !(sum.total_feedback > 0)) {
+                el.innerHTML =
+                    '<h4 class="fb-bd-title">Provider by intent</h4><p class="muted fb-bd-empty">Refresh to load data.</p>';
+                return;
+            }
+            const bip = sum.by_intent_provider;
+            if (!bip || typeof bip !== 'object' || Object.keys(bip).length === 0) {
+                el.innerHTML =
+                    '<h4 class="fb-bd-title">Provider by intent</h4><p class="muted fb-bd-empty">No cross-tab data.</p>';
+                return;
+            }
+            const intentRows = Object.keys(bip).map((it) => {
+                const provs = bip[it] || {};
+                const vol = Object.values(provs).reduce((s, v) => s + (Number(v && v.total) || 0), 0);
+                return { it, vol };
+            });
+            intentRows.sort((a, b) => b.vol - a.vol || String(a.it).localeCompare(String(b.it)));
+            const parts = [
+                '<h4 class="fb-bd-title">Provider by intent</h4>',
+                '<p class="fb-ip-hint muted">Per intent: providers sorted by satisfaction, then volume.</p>',
+            ];
+            intentRows.forEach(({ it }) => {
+                const provs = bip[it] || {};
+                const rows = Object.entries(provs).map(([p, v]) => ({ p, ...(v || {}) }));
+                rows.sort((a, b) => {
+                    const sa = typeof a.satisfaction === 'number' ? a.satisfaction : 0;
+                    const sb = typeof b.satisfaction === 'number' ? b.satisfaction : 0;
+                    if (sb !== sa) return sb - sa;
+                    const ta = Number(a.total) || 0;
+                    const tb = Number(b.total) || 0;
+                    if (tb !== ta) return tb - ta;
+                    return String(a.p).localeCompare(String(b.p));
+                });
+                const itLabel = fbBreakdownLabel(it);
+                parts.push(`<div class="fb-ip-intent">${escapeHtml(itLabel)}</div>`);
+                rows.forEach(({ p, satisfaction, positive, negative, total }) => {
+                    const pct = Math.round(Math.max(0, Math.min(1, satisfaction || 0)) * 100);
+                    const name = fbBreakdownLabel(p);
+                    const pos = Number(positive) || 0;
+                    const neg = Number(negative) || 0;
+                    const n = Number(total) || 0;
+                    parts.push(
+                        `<div class="fb-ip-row"><span class="fb-ip-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>` +
+                            `<span class="fb-ip-sat">${pct}%</span>` +
+                            `<span class="fb-ip-counts muted">+${pos}/-${neg} · ${n}</span></div>`,
+                    );
+                });
+            });
+            el.innerHTML = parts.join('');
+        }
+
+        function fbRenderKpiGrid(sum, allRows) {
+            const el = document.getElementById('fbKpiGrid');
+            if (!el) return;
+            const avg = fbAvgRatingFromRows(allRows);
+            const total = sum ? sum.total_feedback || 0 : 0;
+            const pos = sum ? sum.positive_count || 0 : 0;
+            const neg = sum ? sum.negative_count || 0 : 0;
+            const satPct = sum ? Math.round((sum.satisfaction || 0) * 100) : 0;
+            const avgStr = avg != null ? avg.toFixed(1) : '—';
+            const avgHint = avg != null ? 'from star ratings in loaded rows' : 'no star ratings in loaded rows';
+            el.innerHTML = `
+                <div class="fb-kpi-card"><div class="fb-kpi-label">Total feedback</div><div class="fb-kpi-value">${total}</div><div class="fb-kpi-hint">all recorded responses</div></div>
+                <div class="fb-kpi-card"><div class="fb-kpi-label">Positive</div><div class="fb-kpi-value">${pos}</div><div class="fb-kpi-hint">thumbs up</div></div>
+                <div class="fb-kpi-card"><div class="fb-kpi-label">Negative</div><div class="fb-kpi-value">${neg}</div><div class="fb-kpi-hint">thumbs down</div></div>
+                <div class="fb-kpi-card"><div class="fb-kpi-label">Satisfaction</div><div class="fb-kpi-value">${satPct}%</div><div class="fb-kpi-hint">positive share (summary)</div></div>
+                <div class="fb-kpi-card"><div class="fb-kpi-label">Avg rating</div><div class="fb-kpi-value">${escapeHtml(avgStr)}</div><div class="fb-kpi-hint">${escapeHtml(avgHint)}</div></div>
+            `;
+        }
+
+        function fbPreviewBlock(label, raw) {
+            const t = (raw || '').trim();
+            if (!t) {
+                const msg = label === 'Prompt'
+                    ? 'Prompt preview unavailable'
+                    : 'Response preview unavailable';
+                return `<div class="fb-block-label">${label}</div><div class="fb-block-text muted-unavail">${msg}</div>`;
+            }
+            return `<div class="fb-block-label">${label}</div><div class="fb-block-text">${escapeHtml(t)}</div>`;
+        }
+
+        function renderFeedbackScreen() {
+            const sum = state.feedbackSummary;
+            const allRows = state.feedbackRecent || [];
+            const recEl = document.getElementById('fbRecent');
+            const anPre = document.getElementById('fbAnalysis');
+            const anWrap = document.getElementById('fbAnalysisWrap');
+            const anEmpty = document.getElementById('fbAnalysisEmpty');
+            const anMeta = document.getElementById('fbAnalysisMeta');
+            const anSub = document.getElementById('fbAnalysisSubline');
+            const pill = document.getElementById('fbAnalysisCachedPill');
+            const meta = state.feedbackAnalysisMeta || {};
+            const pageInfo = document.getElementById('fbPageInfo');
+            const btnPrev = document.getElementById('fbPagePrev');
+            const btnNext = document.getElementById('fbPageNext');
+            const selSize = document.getElementById('fbPageSizeSelect');
+            const selRating = document.getElementById('fbRatingFilter');
+            const inpSearch = document.getElementById('fbListSearch');
+
+            fbRenderKpiGrid(sum, allRows);
+            fbRenderBreakdownAside(sum);
+            fbRenderIntentProviderPanel(sum);
+
+            if (selSize && document.activeElement !== selSize) {
+                selSize.value = String(state.feedbackUi.pageSize);
+            }
+            if (selRating && document.activeElement !== selRating) {
+                selRating.value = state.feedbackUi.filterRating;
+            }
+            if (inpSearch && document.activeElement !== inpSearch) {
+                inpSearch.value = state.feedbackUi.filterText;
+            }
+
+            const filtered = fbGetFilteredFeedbackRows();
+            fbClampFeedbackPage(filtered.length);
+            const ps = Math.max(1, parseInt(state.feedbackUi.pageSize, 10) || 10);
+            const page = state.feedbackUi.page;
+            const pages = Math.max(1, Math.ceil(filtered.length / ps));
+            const startIdx = (page - 1) * ps;
+            const pageRows = filtered.slice(startIdx, startIdx + ps);
+            const startN = filtered.length ? startIdx + 1 : 0;
+            const endN = filtered.length ? Math.min(startIdx + ps, filtered.length) : 0;
+            const rangeText =
+                filtered.length === 0
+                    ? 'Showing 0 of 0'
+                    : `Showing ${startN}–${endN} of ${filtered.length}`;
+
+            if (pageInfo) pageInfo.textContent = rangeText;
+            if (btnPrev) btnPrev.disabled = page <= 1;
+            if (btnNext) btnNext.disabled = page >= pages || filtered.length === 0;
+
+            if (recEl) {
+                if (!allRows.length) {
+                    recEl.textContent = 'No feedback yet.';
+                    recEl.classList.add('muted');
+                } else if (!filtered.length) {
+                    recEl.textContent = 'No rows match the current filters.';
+                    recEl.classList.add('muted');
+                } else {
+                    recEl.classList.remove('muted');
+                    recEl.innerHTML = pageRows
+                        .map((r) => {
+                            const rating = (r.rating || '').toLowerCase();
+                            const isPos = rating === 'positive';
+                            const isNeg = rating === 'negative';
+                            const badgeClass = isPos
+                                ? 'fb-badge fb-badge--pos'
+                                : isNeg
+                                  ? 'fb-badge fb-badge--neg'
+                                  : 'fb-chip';
+                            const labelText = isPos ? 'Positive' : isNeg ? 'Negative' : r.rating || 'Unknown';
+                            const num = fbParseNumericRating(r.comment);
+                            const ratingChip =
+                                num != null
+                                    ? `<span class="fb-rating-inline">${num}/5</span>`
+                                    : '<span class="fb-chip">no stars</span>';
+                            const prov = escapeHtml(r.provider || '—');
+                            const mod = escapeHtml(r.model || '—');
+                            const intent = escapeHtml(r.intent || '—');
+                            const lat = Number(r.latency_ms);
+                            const tok = Number(r.total_tokens) || 0;
+                            const when = fbFormatFeedbackWhen(r.updated_ts != null ? r.updated_ts : r.unix_ts);
+                            const ridShort = fbRequestIdLine(r.request_id);
+                            const comBlock = fbHasVisibleComment(r.comment)
+                                ? `${fbPreviewBlock('Comment', fbCommentDisplay(r.comment))}`
+                                : '';
+                            return `
+                        <div class="fb-card">
+                            <div class="fb-card-top">
+                                <span class="${badgeClass}">${escapeHtml(labelText)}</span>
+                                ${ratingChip}
+                                <span class="fb-chip" title="Provider">${prov}</span>
+                                <span class="fb-chip" title="Model">${mod}</span>
+                                <span class="fb-chip" title="Intent">${intent}</span>
+                                <span class="fb-card-top-meta">${when ? escapeHtml(when) : ''}</span>
+                            </div>
+                            <div class="fb-card-body">
+                                ${fbPreviewBlock('Prompt', r.prompt_preview)}
+                                ${fbPreviewBlock('Response', r.response_preview)}
+                                ${comBlock}
+                            </div>
+                            <div class="fb-card-foot">
+                                <span><strong>${Number.isFinite(lat) ? lat.toFixed(1) : '—'}</strong> ms latency</span>
+                                <span><strong>${tok}</strong> total tokens</span>
+                                <span>${ridShort}</span>
+                            </div>
+                        </div>`;
+                        })
+                        .join('');
+                }
+            }
+
+            if (anEmpty && anPre && anWrap && anMeta && pill) {
+                const txt = state.feedbackAnalysis;
+                const has = txt != null && String(txt).trim() !== '';
+                if (anSub) {
+                    if (!has) {
+                        anSub.textContent = '';
+                    } else {
+                        const subParts = [];
+                        if (meta.analysisLimit != null) {
+                            subParts.push(`Sample size: ${meta.analysisLimit} rows`);
+                        }
+                        if (meta.analysisProvider) {
+                            subParts.push(`Provider: ${meta.analysisProvider}`);
+                        }
+                        if (meta.analysisModel) {
+                            subParts.push(`Model: ${meta.analysisModel}`);
+                        }
+                        anSub.textContent = subParts.join(' · ');
+                    }
+                }
+                if (has) {
+                    anEmpty.style.display = 'none';
+                    anWrap.style.display = 'flex';
+                    anPre.textContent = txt;
+                    pill.style.display = meta.cached ? 'inline-block' : 'none';
+                    const metaParts = [];
+                    if (meta.cached) {
+                        metaParts.push('Served from cache (same tenant, sample size, and feedback revision).');
+                    }
+                    if (meta.analysisLimit != null) {
+                        metaParts.push(`Sample size: ${meta.analysisLimit} rows`);
+                    }
+                    if (meta.analysisProvider) {
+                        metaParts.push(`Analysis provider: ${meta.analysisProvider}`);
+                    }
+                    if (meta.analysisModel) {
+                        metaParts.push(`Analysis model: ${meta.analysisModel}`);
+                    }
+                    if (meta.limitCapped) {
+                        metaParts.push('Row limit was capped to the server maximum.');
+                    }
+                    anMeta.textContent = metaParts.join(' ');
+                    anMeta.style.display = metaParts.length ? 'block' : 'none';
+                } else {
+                    anEmpty.style.display = 'block';
+                    anWrap.style.display = 'none';
+                    anPre.textContent = '';
+                    pill.style.display = 'none';
+                    anMeta.style.display = 'none';
+                    anMeta.textContent = '';
+                }
+            }
+        }
+
+        async function refreshFeedbackAdmin() {
+            const status = document.getElementById('fbStatus');
+            if (status) status.textContent = 'Loading feedback…';
+            try {
+                const [sumRes, recRes] = await Promise.all([
+                    fetch(`${API_BASE}/v1/feedback/summary`, { headers: { 'X-API-Key': 'demo-key-123' } }),
+                    fetch(`${API_BASE}/v1/feedback/recent?limit=500`, { headers: { 'X-API-Key': 'demo-key-123' } }),
+                ]);
+                if (sumRes.ok) state.feedbackSummary = await sumRes.json();
+                if (recRes.ok) {
+                    const rec = await recRes.json();
+                    state.feedbackRecent = rec.feedback || [];
+                }
+                state.feedbackUi.page = 1;
+                renderFeedbackScreen();
+                if (status) status.textContent = 'Updated.';
+            } catch (e) {
+                if (status) status.textContent = `Feedback fetch failed: ${e.message || e}`;
+            }
+        }
+
+        async function analyzeFeedbackWithAI() {
+            const status = document.getElementById('fbStatus');
+            const sel = document.getElementById('fbAnalysisSampleSize');
+            const limitRaw = sel && sel.value ? parseInt(sel.value, 10) : 100;
+            const limit = [100, 250, 500].includes(limitRaw) ? limitRaw : 100;
+            if (status) status.textContent = 'Running AI analysis…';
+            try {
+                const r = await fetch(`${API_BASE}/v1/feedback/analyze`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'demo-key-123',
+                    },
+                    body: JSON.stringify({ limit }),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(data.detail || `analysis failed (${r.status})`);
+                state.feedbackAnalysis = data.analysis != null ? data.analysis : '';
+                state.feedbackAnalysisMeta = {
+                    cached: !!data.cached,
+                    analysisLimit: data.analysis_limit != null ? data.analysis_limit : null,
+                    requestedLimit: data.requested_limit != null ? data.requested_limit : null,
+                    limitCapped: !!data.limit_capped,
+                    analysisProvider: data.provider != null ? String(data.provider) : null,
+                    analysisModel: data.model != null ? String(data.model) : null
+                };
+                renderFeedbackScreen();
+                const capNote = data.limit_capped ? ' (capped to max)' : '';
+                const lim = data.analysis_limit != null ? ` · ${data.analysis_limit} rows` : '';
+                if (status) {
+                    status.textContent = data.cached
+                        ? `Loaded cached analysis${lim}.`
+                        : `AI analysis complete${lim}${capNote}.`;
+                }
+            } catch (e) {
+                if (status) status.textContent = `AI analysis failed: ${e.message || e}`;
+            }
         }
 
         async function sendMessage({ source }) {
@@ -6013,6 +7233,15 @@
             sendBtn.classList.add('loading');
 
             if (isUser) {
+                state.lastCompletionMeta = null;
+                state.feedbackSubmittedRequestId = null;
+                state.feedbackDraftSentiment = null;
+                setFeedbackStatus('');
+                const rs = document.getElementById('ratingSelect');
+                const fc = document.getElementById('feedbackComment');
+                if (rs) rs.value = '';
+                if (fc) fc.value = '';
+                syncUserFeedbackFormState();
                 setUserWorkspaceUIState('running');
                 const rp = document.getElementById('userRunningPrompt');
                 if (rp) rp.textContent = content;
@@ -6037,6 +7266,14 @@
                 }
                 const data = await response.json();
                 state.lastResponse = data.content || '';
+                state.lastCompletionMeta = {
+                    request_id: data.request_id,
+                    provider: data.provider,
+                    model: data.model,
+                    total_tokens: data.total_tokens,
+                    latency_ms: data.latency_ms,
+                };
+                syncUserFeedbackFormState();
                 if (isUser) {
                     clearUserRunningAnim();
                     const pr = document.getElementById('userResultPromptText');
@@ -6095,7 +7332,9 @@
                     if (pr) pr.textContent = state.lastPrompt || content;
                     setUserWorkspaceUIState('result');
                 }
+                state.feedbackDraftSentiment = null;
                 updateUserResponse({ content: `Error: ${error.message}`, provider: null, latency_ms: null, fallback_used: false });
+                syncUserFeedbackFormState();
                 addEvent('error', `Request failed: ${error.message}`);
                 state.lastAdminTrace = {
                     sentAt: Date.now(),

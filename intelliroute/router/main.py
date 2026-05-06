@@ -14,6 +14,7 @@ Responsibilities
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 <<<<<<< HEAD
 =======
@@ -21,7 +22,7 @@ import random
 >>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 import time
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -36,7 +37,7 @@ from ..common.models import (
 <<<<<<< HEAD
 =======
     BrownoutStatus,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
+    ChatMessage,
     CompletionRequest,
     CompletionResponse,
     CostEvent,
@@ -74,6 +75,7 @@ from .provider_daily_quota import (
 )
 from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
+from .user_feedback_store import CompletionMeta, UserFeedbackStore, format_provider_by_intent_for_prompt
 from .weight_tuner import WeightTuner
 >>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
@@ -90,7 +92,7 @@ request_queue = RequestQueue()
 brownout_manager = BrownoutManager()
 _tenant_brownout: dict[str, BrownoutManager] = {}
 weight_tuner = WeightTuner(policy)
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
+user_feedback = UserFeedbackStore()
 
 app = FastAPI(title="IntelliRoute Router")
 app.add_middleware(
@@ -677,6 +679,31 @@ async def _queue_worker(worker_id: int) -> None:
             await asyncio.sleep(0.1)
 
 
+def _last_user_message_text(messages: list[ChatMessage]) -> str:
+    for m in reversed(messages):
+        if m.role.lower() == "user" and (m.content or "").strip():
+            return str(m.content).strip()
+    return ""
+
+
+def _truncate_preview_text(text: str, max_len: int) -> str:
+    raw = " ".join((text or "").split())
+    if max_len <= 0:
+        return ""
+    if len(raw) <= max_len:
+        return raw
+    return raw[: max_len - 1] + "…"
+
+
+def _completion_feedback_previews(req: CompletionRequest, response_text: str) -> tuple[str, str]:
+    pl = settings.feedback_prompt_preview_chars
+    rl = settings.feedback_response_preview_chars
+    return (
+        _truncate_preview_text(_last_user_message_text(req.messages), pl),
+        _truncate_preview_text(response_text or "", rl),
+    )
+
+
 async def _execute_completion(
     request_id: str, req: CompletionRequest
 ) -> CompletionResponse:
@@ -968,6 +995,23 @@ async def _execute_completion(
             latency_ms=(time.monotonic() - started) * 1000,
             success=True,
         )
+        pp, rp = _completion_feedback_previews(effective_req, str(data.get("content") or ""))
+        user_feedback.record_completion(
+            CompletionMeta(
+                request_id=request_id,
+                tenant_id=effective_req.tenant_id,
+                provider=info.name,
+                model=info.model,
+                intent=intent.value,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                latency_ms=round(latency_ms, 2),
+                unix_ts=time.time(),
+                prompt_preview=pp,
+                response_preview=rp,
+            )
+        )
         if daily_quota_limit(info.name, settings) is not None:
             daily_quota_tracker.record_successful_completion(info.name)
         return CompletionResponse(
@@ -1108,6 +1152,19 @@ class RoutingModeBody(BaseModel):
     mode: str
 
 
+class UserFeedbackSubmit(BaseModel):
+    request_id: str
+    rating: Literal["positive", "negative", "helpful", "not_helpful"]
+    comment: str = ""
+    tenant_id: str = ""
+
+
+class UserFeedbackAnalyzeRequest(BaseModel):
+    tenant_id: str
+    limit: Optional[int] = None
+    force_refresh: bool = False
+
+
 class ResetPayload(BaseModel):
     reset_feedback: bool = True
     reset_brownout: bool = True
@@ -1115,6 +1172,7 @@ class ResetPayload(BaseModel):
     reset_tuner: bool = True
     reset_routing_mode: bool = True
     reset_provider_daily_quotas: bool = True
+    reset_user_feedback: bool = True
 
 
 @app.get("/weights")
@@ -1152,6 +1210,8 @@ async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
         _set_routing_mode("intelliroute")
     if body.reset_provider_daily_quotas:
         daily_quota_tracker.clear()
+    if body.reset_user_feedback:
+        user_feedback.reset()
     _rr_cursor = 0
     return {
         "ok": True,
@@ -1162,6 +1222,7 @@ async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
         "reset_tuner": body.reset_tuner,
         "reset_routing_mode": body.reset_routing_mode,
         "reset_provider_daily_quotas": body.reset_provider_daily_quotas,
+        "reset_user_feedback": body.reset_user_feedback,
     }
 
 
@@ -1208,6 +1269,189 @@ async def get_feedback() -> dict:
             "sample_count": m.sample_count,
         }
         for name, m in metrics.items()
+    }
+
+
+@app.post("/feedback/submit")
+async def submit_user_feedback(payload: UserFeedbackSubmit) -> dict:
+    tenant = (payload.tenant_id or "").strip()
+    if not tenant:
+        raise HTTPException(status_code=400, detail="tenant_id is required")
+    rating = "positive" if payload.rating in {"positive", "helpful"} else "negative"
+    try:
+        row = user_feedback.submit_feedback(
+            tenant_id=tenant,
+            request_id=payload.request_id,
+            rating=rating,
+            comment=payload.comment,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="request_id not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="request_id does not belong to tenant")
+    log_event(
+        log,
+        "user_feedback_recorded",
+        tenant_id=tenant,
+        request_id=payload.request_id,
+        rating=rating,
+        provider=row.get("provider"),
+        model=row.get("model"),
+    )
+    return {"ok": True, "feedback": row}
+
+
+@app.get("/feedback/recent")
+async def feedback_recent(tenant_id: str, limit: int = 100) -> dict:
+    lim = max(1, min(limit, 500))
+    rows = user_feedback.recent_feedback(tenant_id=tenant_id, limit=lim)
+    return {"tenant_id": tenant_id, "count": len(rows), "feedback": rows}
+
+
+@app.get("/feedback/summary")
+async def feedback_summary(tenant_id: str) -> dict:
+    return user_feedback.summary(tenant_id=tenant_id)
+
+
+@app.post("/feedback/analyze")
+async def feedback_analyze(body: UserFeedbackAnalyzeRequest) -> dict:
+    tenant_id = (body.tenant_id or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id is required")
+
+    max_rows = max(1, settings.feedback_analysis_max_rows)
+    default_rows = max(1, settings.feedback_analysis_default_rows)
+    raw_limit = body.limit if body.limit is not None else default_rows
+    try:
+        requested = int(raw_limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer") from None
+    effective_limit = max(1, min(requested, max_rows))
+    limit_capped = effective_limit != requested
+
+    revision = user_feedback.revision_for_tenant(tenant_id)
+    if not body.force_refresh:
+        cached = user_feedback.get_cached_analysis(
+            tenant_id=tenant_id, sample_limit=effective_limit, revision=revision
+        )
+        if cached:
+            return {
+                "cached": True,
+                "limit_capped": limit_capped,
+                "requested_limit": requested,
+                "analysis_limit": effective_limit,
+                **cached,
+            }
+
+    summary = user_feedback.summary(tenant_id=tenant_id)
+    if summary.get("total_feedback", 0) < 1:
+        raise HTTPException(status_code=400, detail="no feedback available for analysis")
+
+    pool_max = max(effective_limit, settings.feedback_analysis_sample_pool_max)
+    sample = user_feedback.analysis_sample_rows(
+        tenant_id=tenant_id, sample_limit=effective_limit, pool_max=pool_max
+    )
+    if not sample:
+        raise HTTPException(status_code=400, detail="no feedback available for analysis")
+
+    brief_rows: list[str] = []
+    for r in sample:
+        rid = str(r.get("request_id", ""))
+        rid_short = f"{rid[:10]}…" if len(rid) > 12 else rid
+        pp = (r.get("prompt_preview") or "").replace("\n", " ")
+        rp = (r.get("response_preview") or "").replace("\n", " ")
+        brief_rows.append(
+            f"- request_id={rid_short} provider={r['provider']} model={r['model']} intent={r['intent']} "
+            f"rating={r['rating']} tokens={r['total_tokens']} latency_ms={round(float(r['latency_ms']), 2)} "
+            f"comment={(r.get('comment') or '').strip() or '(none)'} "
+            f"prompt_preview={pp or '(none)'} response_preview={rp or '(none)'}"
+        )
+    summary_for_prompt = {k: v for k, v in summary.items() if k != "by_intent_provider"}
+    provider_by_intent_block = format_provider_by_intent_for_prompt(summary)
+    sample_n = len(sample)
+    total_fb = int(summary.get("total_feedback") or 0)
+    overall_sat_pct = round(float(summary.get("satisfaction") or 0.0) * 100)
+    analysis_context = "\n".join(
+        [
+            "### What you are given (do not only repeat overall satisfaction)",
+            f"- **Total feedback rows** in the database for this tenant: **{total_fb}**",
+            f"- **Overall satisfaction** (positive ÷ all feedback): **{overall_sat_pct}%**",
+            "- **Summary JSON** (all feedback rows, not just the sample): `total_feedback`, `positive_count`, "
+            "`negative_count`, `satisfaction`, `by_provider`, `by_model`, `by_intent`, `negative_comments` "
+            "(themes from negative comments).",
+            "- **Provider-by-intent** block: satisfaction and counts **per provider within each intent** "
+            "(all feedback rows).",
+            f"- **Stratified sample** below: **{sample_n}** rows (cap requested/effective: **{effective_limit}**; "
+            "drawn from a newest-first pool). Each line includes `rating`, `comment`, `provider`, `model`, "
+            "`intent`, `tokens` (total_tokens), `latency_ms`, `prompt_preview`, `response_preview`.",
+            "",
+            "### What to produce",
+            "- Which **provider** looks strongest for **each intent**, and which **provider/model** pairs look weak.",
+            "- **Low-sample warnings** where satisfaction is high or low but **n is tiny** (e.g. 100% with n=1).",
+            "- **Common negative themes** from `negative_comments` and negative rows in the sample.",
+            "- Brief **latency / token** observations from the sample only (qualitative; not full traffic).",
+            "- **Suggested improvements** for routing weights, provider selection, prompts, or fallback behavior. "
+            "Do **not** claim upstream providers (e.g. Gemini, Groq) are automatically retrained or tuned by this "
+            "dashboard; stay with **suggested** operational changes only.",
+            "",
+            "### Summary aggregate (JSON; all feedback rows; excludes duplicate by_intent_provider tree)",
+            json.dumps(summary_for_prompt, separators=(",", ":"), ensure_ascii=False),
+            "",
+            "### Provider performance by intent (all feedback rows; satisfaction = positive ÷ total)",
+            provider_by_intent_block,
+            "",
+            f"### Stratified sample (n={sample_n}, cap={effective_limit})",
+            "\n".join(brief_rows),
+        ]
+    )
+    prompt = (
+        "You are an admin analyst for an LLM router. Interpret the metrics below; do not merely restate "
+        "overall satisfaction.\n"
+        "Each sampled row has only truncated `prompt_preview` and `response_preview`. Do not assume missing "
+        "full content; never invent full prompts or full model outputs.\n"
+        "Cross-check provider/model/intent aggregates with the provider-by-intent block and the sample lines.\n\n"
+        + analysis_context
+    )
+    req = CompletionRequest(
+        tenant_id=tenant_id,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Be concise and actionable. Ground every claim in the supplied metrics or sample lines; "
+                    "call out uncertainty from small n."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        intent_hint=Intent.REASONING,
+        max_tokens=900,
+        temperature=0.2,
+    )
+    result = await _execute_completion(str(uuid.uuid4()), req)
+    cached = user_feedback.put_cached_analysis(
+        tenant_id=tenant_id,
+        sample_limit=effective_limit,
+        revision=revision,
+        analysis=result.content,
+        provider=result.provider,
+        model=result.model,
+    )
+    log_event(
+        log,
+        "user_feedback_ai_analysis_generated",
+        tenant_id=tenant_id,
+        provider=result.provider,
+        model=result.model,
+        total_feedback=summary.get("total_feedback", 0),
+        analysis_sample_limit=effective_limit,
+    )
+    return {
+        "cached": False,
+        "limit_capped": limit_capped,
+        "requested_limit": requested,
+        "analysis_limit": effective_limit,
+        **cached,
     }
 
 

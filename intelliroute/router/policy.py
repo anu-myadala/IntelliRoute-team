@@ -47,7 +47,7 @@ INTENT_WEIGHTS: dict[Intent, Weights] = {
     Intent.INTERACTIVE: Weights(latency=0.55, cost=0.15, capability=0.20, success=0.10),
     Intent.REASONING:   Weights(latency=0.10, cost=0.10, capability=0.50, success=0.30),
     Intent.BATCH:       Weights(latency=0.05, cost=0.65, capability=0.15, success=0.15),
-    Intent.CODE:        Weights(latency=0.25, cost=0.10, capability=0.45, success=0.20),
+    Intent.CODE:        Weights(latency=0.10, cost=0.05, capability=0.65, success=0.20),
 }
 
 

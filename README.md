@@ -482,8 +482,38 @@ defined in `intelliroute/common/config.py`. The most important variables:
 | `INTELLIROUTE_MOCK_PUBLIC_PORT`       | *(unset)*        | Each mock process must set this to its HTTP port for `hybrid` / `dynamic` so the router learns the live URL |
 | `INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS` | `30`        | Lease length for dynamically registered providers; stale without heartbeats |
 | `INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS` | `8` | How often mocks call `POST /providers/heartbeat` |
+| `INTELLIROUTE_PROVIDER_MODE` | `auto` | Bootstrap mode: `auto` (keys → externals only, else mocks), `mock_only`, `external_only`, `hybrid`. See `intelliroute/common/provider_mode.py`. |
+| `INTELLIROUTE_USE_MOCKS` | `0` | If `1`, behaves like **`mock_only`** regardless of `INTELLIROUTE_PROVIDER_MODE` (mocks only at bootstrap). |
+| `GEMINI_API_KEY` / `GROQ_API_KEY` | *(empty)* | Only matter when the router **registers** Groq/Gemini (not in `mock_only` / `INTELLIROUTE_USE_MOCKS=1`). |
+| `INTELLIROUTE_USER_FEEDBACK_DB_PATH` | `artifacts/user_feedback.sqlite3` | SQLite file for persisted user feedback. |
+| `INTELLIROUTE_FEEDBACK_PROMPT_PREVIEW_CHARS` | `200` | Max stored characters of the last user message (per completion). |
+| `INTELLIROUTE_FEEDBACK_RESPONSE_PREVIEW_CHARS` | `300` | Max stored characters of the model reply preview. |
+| `INTELLIROUTE_FEEDBACK_ANALYSIS_DEFAULT_ROWS` | `100` | Default sample size for `POST /feedback/analyze` when `limit` is omitted. |
+| `INTELLIROUTE_FEEDBACK_ANALYSIS_MAX_ROWS` | `500` | Hard cap for analysis sample rows (larger requests are clamped). |
+| `INTELLIROUTE_FEEDBACK_ANALYSIS_SAMPLE_POOL_MAX` | `20000` | Max recent rows read from SQLite when building the stratified analysis sample. |
 
 `scripts/start_stack.py` sets the mock public ports and the variables above so the demo stack stays routable under the default **hybrid** mode.
+
+### Safe local testing (no Gemini / Groq quota)
+
+To run the stack **without registering or calling** Gemini or Groq—even if keys exist in `.env`—use:
+
+```bash
+INTELLIROUTE_PROVIDER_MODE=mock_only
+INTELLIROUTE_USE_MOCKS=1
+```
+
+Either variable alone is enough for mocks-only routing in normal setups (`USE_MOCKS=1` already forces effective `mock_only`). Using **both** makes intent obvious for teammates.
+
+Behavior (verified in `tests/test_provider_mode.py` and router bootstrap in `intelliroute/router/main.py`):
+
+- Only mock providers are registered from bootstrap (Groq/Gemini are not added to the registry).
+- `scripts/start_stack.py` still launches the three mock Uvicorn processes (`should_skip_mock_uvicorn_subprocesses` is false for `mock_only`).
+- **Feedback AI analysis** (`POST /feedback/analyze`) calls `_execute_completion` like any other completion; it does **not** bypass the router. With mocks only registered, analysis traffic goes to mock provider URLs only.
+
+**How to verify:** After `start_stack.py`, call `GET http://127.0.0.1:8001/providers` (or use the admin UI provider list). You should see `mock-fast`, `mock-smart`, `mock-cheap` (and any dynamically registered mocks), and **no** `groq` / `gemini`. Run completions and feedback analysis; network traffic should stay on localhost mock ports.
+
+A template without secrets is in **`.env.example`**.
 
 ---
 

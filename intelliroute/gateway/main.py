@@ -116,6 +116,71 @@ async def system_health() -> dict:
     return {"providers": snapshot}
 
 
+@app.post("/v1/feedback")
+async def submit_feedback(
+    body: dict,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    payload = dict(body or {})
+    payload["tenant_id"] = tenant
+    assert _http is not None
+    r = await _http.post(f"{settings.router_url}/feedback/submit", json=payload)
+    detail = r.json() if _is_json(r) else {"detail": "router error"}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=detail.get("detail", detail))
+    return detail
+
+
+@app.get("/v1/feedback/recent")
+async def feedback_recent(
+    limit: int = 100,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    assert _http is not None
+    r = await _http.get(
+        f"{settings.router_url}/feedback/recent",
+        params={"tenant_id": tenant, "limit": limit},
+    )
+    if r.status_code != 200:
+        detail = r.json().get("detail", "router error") if _is_json(r) else "router error"
+        raise HTTPException(status_code=r.status_code, detail=detail)
+    return r.json()
+
+
+@app.get("/v1/feedback/summary")
+async def feedback_summary(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    assert _http is not None
+    r = await _http.get(
+        f"{settings.router_url}/feedback/summary",
+        params={"tenant_id": tenant},
+    )
+    if r.status_code != 200:
+        detail = r.json().get("detail", "router error") if _is_json(r) else "router error"
+        raise HTTPException(status_code=r.status_code, detail=detail)
+    return r.json()
+
+
+@app.post("/v1/feedback/analyze")
+async def feedback_analyze(
+    body: Optional[dict] = None,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    payload = dict(body or {})
+    payload["tenant_id"] = tenant
+    assert _http is not None
+    r = await _http.post(f"{settings.router_url}/feedback/analyze", json=payload)
+    detail = r.json() if _is_json(r) else {"detail": "router error"}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=detail.get("detail", detail))
+    return detail
+
+
 def _is_json(r: httpx.Response) -> bool:
     ct = r.headers.get("content-type", "")
     return "application/json" in ct
