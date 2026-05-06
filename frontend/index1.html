@@ -284,26 +284,6 @@
             box-shadow: 0 0 12px rgba(63, 185, 80, 0.3);
         }
 
-        .user-demo-controls {
-            margin-top: 16px;
-            padding-top: 14px;
-            border-top: 1px solid rgba(148, 163, 184, 0.1);
-        }
-
-        .user-demo-controls .demo-controls {
-            max-width: 520px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        .demo-controls-note {
-            margin-top: 8px;
-            text-align: center;
-            font-size: 11px;
-            line-height: 1.4;
-            color: var(--text-secondary);
-        }
-
         /* CENTER PANEL - VISUALIZATION */
         .center-panel {
             display: flex;
@@ -5225,15 +5205,6 @@
                                 <button type="button" id="userNewPromptBtn" class="user-text-link">New prompt</button>
                             </div>
                         </div>
-
-                        <div class="user-demo-controls" aria-label="Failure and recovery demo controls">
-                            <div class="demo-controls">
-                                <button type="button" class="btn-demo btn-fail" id="forceFailBtn">Force Fail</button>
-                                <button type="button" class="btn-demo btn-recover" id="recoverBtn">Recover</button>
-                                <button type="button" class="btn-demo" id="burstTestBtn">Burst Test (20)</button>
-                            </div>
-                            <div class="demo-controls-note">Local mock demo controls target <strong>mock-smart</strong> on port 9002.</div>
-                        </div>
                     </div>
                 </div>
             </section>
@@ -5741,14 +5712,13 @@
     </div>
 
     <script>
-        const IS_LOCAL_DEMO = ['localhost', '127.0.0.1'].includes(window.location.hostname) || window.location.protocol === 'file:';
-        const API_BASE = IS_LOCAL_DEMO ? 'http://127.0.0.1:8000' : 'https://intelliroute-team.onrender.com';       // Gateway
-        const ROUTER_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:8001' : null;     // Router (feedback, queue)
-        const RATE_LIMITER_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:8002' : null; // Rate limiter rl-0
-        const HEALTH_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:8004' : null;     // Health monitor
-        const COST_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:8003' : null;       // Cost tracker
-        const ADMIN_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:9002' : null;      // mock-smart (force_fail)
-        const RL_PORTS = IS_LOCAL_DEMO ? [8002, 8012, 8022] : [];            // Rate limiter replicas
+        const API_BASE = 'https://intelliroute-team.onrender.com';       // Gateway
+        const ROUTER_API = null;     // Router (feedback, queue)
+        const RATE_LIMITER_API = null; // Rate limiter rl-0
+        const HEALTH_API = null;     // Health monitor
+        const COST_API = null;       // Cost tracker
+        const ADMIN_API = null;      // mock-smart (force_fail)
+        const RL_PORTS = [];            // Rate limiter replicas
         const USER_HISTORY_KEY = 'latticeUserPromptHistory';
         /** Header / profile: never surface raw tenant ids (e.g. demo-tenant) in user chrome. */
         const USER_FACING_NAME = 'Demo user';
@@ -9557,7 +9527,7 @@
 
         async function forceFailProvider() {
             if (!ADMIN_API) {
-                addEvent('error', 'Provider force-fail is only available when running the local mock stack');
+                addEvent('error', 'Provider force-fail is unavailable in cloud mode');
                 return;
             }
             try {
@@ -9567,10 +9537,9 @@
                     body: JSON.stringify({ fail: true })
                 });
                 state.failedProvider = true;
-                addEvent('error', 'mock-smart forced to fail');
+                addEvent('error', 'Provider forced to fail');
                 const btn = document.getElementById('forceFailBtn');
                 if (btn) btn.style.opacity = '0.5';
-                updateMetrics();
             } catch (error) {
                 addEvent('error', 'Failed to force provider failure');
             }
@@ -9578,7 +9547,7 @@
 
         async function recoverProvider() {
             if (!ADMIN_API) {
-                addEvent('error', 'Provider force-fail is only available when running the local mock stack');
+                addEvent('error', 'Provider force-fail is unavailable in cloud mode');
                 return;
             }   
             try {
@@ -9588,10 +9557,9 @@
                     body: JSON.stringify({ fail: false })
                 });
                 state.failedProvider = false;
-                addEvent('success', 'mock-smart recovered');
+                addEvent('success', 'Provider recovered');
                 const btn = document.getElementById('forceFailBtn');
                 if (btn) btn.style.opacity = '1';
-                updateMetrics();
             } catch (error) {
                 addEvent('error', 'Failed to recover provider');
             }

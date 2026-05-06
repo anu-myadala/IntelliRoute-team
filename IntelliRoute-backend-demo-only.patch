@@ -1,0 +1,199 @@
+diff --git a/intelliroute/health_monitor/main.py b/intelliroute/health_monitor/main.py
+index 3cef423..93a2018 100644
+--- a/intelliroute/health_monitor/main.py
++++ b/intelliroute/health_monitor/main.py
+@@ -69,6 +69,10 @@ async def snapshot() -> dict[str, ProviderHealth]:
+     result: dict[str, ProviderHealth] = {}
+     now = time.time()
+     for name, b in breakers.items():
++        # Advance OPEN -> HALF_OPEN after the cooldown has elapsed.
++        # The router gets circuit state through this snapshot, so the
++        # snapshot is the natural place to expose recovery probes.
++        b.allow_request()
+         result[name] = ProviderHealth(
+             name=name,
+             healthy=b.state.value != "open",
+@@ -83,6 +87,8 @@ async def snapshot() -> dict[str, ProviderHealth]:
+ @app.get("/snapshot/{provider}", response_model=ProviderHealth)
+ async def snapshot_one(provider: str) -> ProviderHealth:
+     b = _get_breaker(provider)
++    # Advance OPEN -> HALF_OPEN after the cooldown has elapsed.
++    b.allow_request()
+     return ProviderHealth(
+         name=provider,
+         healthy=b.state.value != "open",
+diff --git a/intelliroute/router/policy.py b/intelliroute/router/policy.py
+index fcb7587..c090d96 100644
+--- a/intelliroute/router/policy.py
++++ b/intelliroute/router/policy.py
+@@ -176,4 +176,18 @@ class RoutingPolicy:
+             )
+ 
+         scored.sort(key=lambda s: s.score, reverse=True)
++
++        # Recovery probe: once the health monitor transitions an OPEN
++        # circuit to HALF_OPEN, give that provider a chance to prove it has
++        # recovered instead of letting stale feedback keep it behind fallback
++        # providers forever. If multiple providers are half-open, preserve
++        # score order within that subset.
++        half_open_names = {
++            name for name, h in health.items() if h.circuit_state == "half_open"
++        }
++        if half_open_names:
++            scored.sort(
++                key=lambda s: (s.provider.name not in half_open_names, -s.score)
++            )
++
+         return scored
+diff --git a/scripts/demo_failure_recovery.py b/scripts/demo_failure_recovery.py
+new file mode 100644
+index 0000000..2873aa0
+--- /dev/null
++++ b/scripts/demo_failure_recovery.py
+@@ -0,0 +1,146 @@
++"""Failure + recovery demo for IntelliRoute.
++
++Run with the stack already running:
++    PYTHONPATH=. python3 scripts/start_stack.py
++
++Then in a second terminal:
++    PYTHONPATH=. python3 scripts/demo_failure_recovery.py
++"""
++from __future__ import annotations
++
++import json
++import os
++import sys
++import time
++
++import httpx
++
++GATEWAY = os.environ.get("INTELLIROUTE_DEMO_URL", "http://127.0.0.1:8000")
++HEALTH = os.environ.get("INTELLIROUTE_HEALTH_URL", "http://127.0.0.1:8004")
++SMART = os.environ.get("INTELLIROUTE_SMART_URL", "http://127.0.0.1:9002")
++KEY = os.environ.get("INTELLIROUTE_DEMO_KEY", "demo-key-123")
++
++HEADERS = {"X-API-Key": KEY, "Content-Type": "application/json"}
++REASONING_REQUEST = {
++    "tenant_id": "ignored-by-gateway",
++    "intent_hint": "reasoning",
++    "messages": [
++        {
++            "role": "user",
++            "content": (
++                "Explain step by step why a distributed system needs failover, "
++                "circuit breakers, and recovery probes."
++            ),
++        }
++    ],
++    "max_tokens": 80,
++}
++
++
++def _complete(label: str) -> dict:
++    r = httpx.post(
++        f"{GATEWAY}/v1/complete", json=REASONING_REQUEST, headers=HEADERS, timeout=10.0
++    )
++    if r.status_code != 200:
++        raise RuntimeError(f"{label}: HTTP {r.status_code} {r.text}")
++    body = r.json()
++    print(
++        f"{label:<24} provider={body['provider']:<10} "
++        f"fallback={str(body['fallback_used']):<5} "
++        f"latency={body['latency_ms']:>7}ms "
++        f"cost=${body['estimated_cost_usd']:.6f}"
++    )
++    return body
++
++
++def _snapshot() -> dict:
++    r = httpx.get(f"{HEALTH}/snapshot", timeout=5.0)
++    r.raise_for_status()
++    return r.json()
++
++
++def _smart_state() -> str:
++    snap = _snapshot()
++    h = snap.get("mock-smart", {})
++    return h.get("circuit_state", "unknown")
++
++
++def _print_snapshot(label: str) -> None:
++    snap = _snapshot()
++    smart = snap.get("mock-smart", {})
++    print(
++        f"{label:<24} smart_state={smart.get('circuit_state', 'unknown'):<9} "
++        f"healthy={str(smart.get('healthy', 'unknown')):<5} "
++        f"failures={smart.get('consecutive_failures', 0)} "
++        f"error_rate={smart.get('error_rate', 0)}"
++    )
++
++
++def _force_smart(fail: bool) -> None:
++    r = httpx.post(f"{SMART}/admin/force_fail", json={"fail": fail}, timeout=5.0)
++    r.raise_for_status()
++    print(f"{'FORCE FAIL' if fail else 'RECOVER'} mock-smart")
++
++
++def _wait_for_state(target: str, timeout_s: float) -> bool:
++    deadline = time.monotonic() + timeout_s
++    while time.monotonic() < deadline:
++        state = _smart_state()
++        if state == target:
++            return True
++        time.sleep(0.5)
++    return False
++
++
++def main() -> int:
++    print("\n=== 1) Normal routing: reasoning goes to mock-smart ===")
++    _complete("baseline")
++    _print_snapshot("health")
++
++    print("\n=== 2) Inject provider failure; router falls back ===")
++    _force_smart(True)
++    try:
++        for i in range(1, 5):
++            _complete(f"failure request {i}")
++            _print_snapshot("health")
++            if _smart_state() == "open":
++                break
++            time.sleep(0.2)
++
++        if _smart_state() != "open":
++            print("WARNING: mock-smart did not reach OPEN yet; send one more request if demoing manually.")
++        else:
++            print("Circuit is OPEN: router will skip mock-smart instead of waiting on a bad dependency.")
++
++        print("\n=== 3) Recover provider and let circuit move to half-open ===")
++        _force_smart(False)
++        print("Waiting for breaker cooldown; polling /snapshot advances OPEN -> HALF_OPEN.")
++        if not _wait_for_state("half_open", timeout_s=8.0):
++            _print_snapshot("health")
++            raise RuntimeError("mock-smart did not enter half_open; check health monitor patch")
++        _print_snapshot("health")
++
++        print("\n=== 4) Recovery probes close the circuit and route back to mock-smart ===")
++        _complete("probe 1")
++        _print_snapshot("health")
++        _complete("probe 2")
++        _print_snapshot("health")
++        _complete("post-recovery")
++        _print_snapshot("final health")
++
++        print("\nDemo complete: failure -> fallback -> open circuit -> half-open probes -> recovered.")
++        return 0
++    finally:
++        # Leave the stack in a healthy state even if the script is interrupted.
++        try:
++            _force_smart(False)
++        except Exception:
++            pass
++
++
++if __name__ == "__main__":
++    try:
++        raise SystemExit(main())
++    except Exception as exc:
++        print(f"\nERROR: {exc}", file=sys.stderr)
++        raise SystemExit(1)

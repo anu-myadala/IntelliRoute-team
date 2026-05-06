@@ -27,7 +27,7 @@ provider_urls: dict[str, str] = {}
 # Running count of /report calls received since process start.
 # Not reset by /reset so operators can distinguish "no events" from "reset just ran".
 _total_reports: int = 0
-_config = CircuitBreakerConfig(failure_threshold=3, open_duration_s=5, half_open_success_required=2)
+_config = CircuitBreakerConfig(failure_threshold=2, open_duration_s=5, half_open_success_required=2)
 
 app = FastAPI(title="IntelliRoute HealthMonitor")
 app.add_middleware(
@@ -82,6 +82,10 @@ async def snapshot() -> dict[str, ProviderHealth]:
     result: dict[str, ProviderHealth] = {}
     now = time.time()
     for name, b in breakers.items():
+        # Advance OPEN -> HALF_OPEN after the cooldown has elapsed.
+        # The router gets circuit state through this snapshot, so the
+        # snapshot is the natural place to expose recovery probes.
+        b.allow_request()
         result[name] = ProviderHealth(
             name=name,
             healthy=b.state.value != "open",
@@ -96,6 +100,8 @@ async def snapshot() -> dict[str, ProviderHealth]:
 @app.get("/snapshot/{provider}", response_model=ProviderHealth)
 async def snapshot_one(provider: str) -> ProviderHealth:
     b = _get_breaker(provider)
+    # Advance OPEN -> HALF_OPEN after the cooldown has elapsed.
+    b.allow_request()
     return ProviderHealth(
         name=provider,
         healthy=b.state.value != "open",
