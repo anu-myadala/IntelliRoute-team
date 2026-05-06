@@ -886,8 +886,7 @@ async def _execute_completion(
             )
         )
 
-<<<<<<< HEAD
-=======
+
         _record_brownout_result(
             effective_req.tenant_id,
             latency_ms=(time.monotonic() - started) * 1000,
@@ -924,10 +923,6 @@ async def _execute_completion(
             estimated_cost_usd=round(estimated_cost, 6),
             fallback_used=fallback_used or i > 0,
             degraded=i > 0,
-<<<<<<< HEAD
-        )
-
-=======
             policy_evaluation=pe,
             brownout_status=bs,
         )
@@ -937,26 +932,11 @@ async def _execute_completion(
         latency_ms=(time.monotonic() - started) * 1000,
         success=False,
     )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     raise HTTPException(status_code=503, detail=f"all providers failed: {last_error}")
 
 
 async def _call_provider(
     info: ProviderInfo, req: CompletionRequest
-<<<<<<< HEAD
-) -> tuple[bool, float, dict | None]:
-    assert _http is not None
-    start = time.monotonic()
-    try:
-        ok, data = await call_provider(_http, info, req)
-        return ok, (time.monotonic() - start) * 1000, data
-    except ProviderCallError as exc:
-        log_event(log, "provider_call_config_error", provider=info.name, error=str(exc))
-        return False, (time.monotonic() - start) * 1000, None
-    except Exception as exc:
-        log_event(log, "provider_call_error", provider=info.name, error=str(exc))
-        return False, (time.monotonic() - start) * 1000, None
-=======
 ) -> tuple[bool, float, dict | None, str | None, int, int | None, bool]:
     assert _http is not None
     start = time.monotonic()
@@ -1147,7 +1127,6 @@ async def rebalance_weights(intent: str) -> dict:
         raise HTTPException(status_code=400, detail=f"unknown intent: {intent}")
     applied = weight_tuner.maybe_rebalance(intent_enum)
     return {"intent": intent, "rebalanced": applied}
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @app.get("/feedback")
@@ -1160,10 +1139,7 @@ async def get_feedback() -> dict:
             "success_rate_ema": round(m.success_rate_ema, 4),
             "token_efficiency_ema": round(m.token_efficiency_ema, 4),
             "anomaly_score": round(m.anomaly_score, 4),
-<<<<<<< HEAD
-=======
             "quality_score": round(m.quality_score, 4),
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             "sample_count": m.sample_count,
         }
         for name, m in metrics.items()
@@ -1365,15 +1341,6 @@ async def queue_stats() -> dict:
     }
 
 
-<<<<<<< HEAD
-@app.post("/decide", response_model=RouteDecision)
-async def decide(req: CompletionRequest) -> RouteDecision:
-    """Introspection endpoint: return the routing decision without executing it."""
-    intent = classify(req)
-    health = await _fetch_health_snapshot()
-    ranked = policy.rank(
-        registry.all(), health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
-=======
 @app.get("/brownout", response_model=BrownoutStatus)
 async def brownout_status() -> BrownoutStatus:
     bs = brownout_manager.snapshot()
@@ -1439,7 +1406,6 @@ async def decide(req: CompletionRequest) -> RouteDecision:
             error_rate=bs.error_rate,
             timeout_rate=bs.timeout_rate,
         ),
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     )
 
 
@@ -1450,8 +1416,6 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
 
     # Determine priority
     priority = INTENT_PRIORITY.get(intent, Priority.MEDIUM)
-<<<<<<< HEAD
-=======
     bs = brownout_manager.snapshot()
 
     # Brownout override for lowest-priority traffic.
@@ -1475,7 +1439,6 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
         and brownout_manager.config.delay_low_priority_ms > 0
     ):
         await asyncio.sleep(brownout_manager.config.delay_low_priority_ms / 1000.0)
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
     # HIGH priority requests bypass the queue
     if priority == Priority.HIGH:
@@ -1502,12 +1465,9 @@ async def complete(req: CompletionRequest) -> CompletionResponse:
         return response
     except asyncio.TimeoutError:
         request_queue.record_timeout(request_id)
-<<<<<<< HEAD
-=======
         _record_brownout_result(
             req.tenant_id, latency_ms=timeout_s * 1000.0, success=False, timed_out=True
         )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         raise HTTPException(
             status_code=504, detail=f"request processing timed out after {timeout_s}s"
         )

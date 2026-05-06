@@ -10,9 +10,6 @@ from ..common.models import CompletionRequest, ProviderInfo
 
 
 class ProviderCallError(RuntimeError):
-<<<<<<< HEAD
-    pass
-=======
     def __init__(
         self,
         message: str,
@@ -73,7 +70,6 @@ def _http_error(provider: str, response: httpx.Response) -> ProviderCallError:
         retry_after_ms=retry_after_ms,
         retryable=True,
     )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 def _message_text_content(content: Any) -> str:
@@ -147,22 +143,6 @@ async def call_provider(
     http: httpx.AsyncClient,
     info: ProviderInfo,
     req: CompletionRequest,
-<<<<<<< HEAD
-) -> tuple[bool, dict[str, Any] | None]:
-    provider_type = (info.provider_type or "mock").lower()
-
-    if provider_type == "mock":
-        response = await http.post(
-            f"{info.url}/v1/chat",
-            json={
-                "messages": [m.model_dump() for m in req.messages],
-                "max_tokens": req.max_tokens,
-            },
-            timeout=settings.provider_timeout_s,
-        )
-        if response.status_code != 200:
-            return False, None
-=======
     timeout_s: float | None = None,
 ) -> tuple[bool, dict[str, Any] | None]:
     provider_type = (info.provider_type or "mock").lower()
@@ -192,25 +172,11 @@ async def call_provider(
             ) from exc
         if response.status_code != 200:
             raise _http_error(info.name, response)
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         return True, response.json()
 
     if provider_type == "groq":
         if not settings.groq_api_key:
             raise ProviderCallError("GROQ_API_KEY is not set")
-<<<<<<< HEAD
-        response = await http.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.groq_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=_groq_payload(info, req),
-            timeout=settings.provider_timeout_s,
-        )
-        if response.status_code != 200:
-            return False, None
-=======
         try:
             response = await http.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -235,7 +201,6 @@ async def call_provider(
             ) from exc
         if response.status_code != 200:
             raise _http_error(info.name, response)
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         body = response.json()
         content = _extract_groq_text(body)
         if not content:
@@ -253,19 +218,6 @@ async def call_provider(
     if provider_type == "gemini":
         if not settings.gemini_api_key:
             raise ProviderCallError("GEMINI_API_KEY is not set")
-<<<<<<< HEAD
-        response = await http.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{info.model}:generateContent",
-            headers={
-                "x-goog-api-key": settings.gemini_api_key,
-                "Content-Type": "application/json",
-            },
-            json=_gemini_payload(req),
-            timeout=settings.provider_timeout_s,
-        )
-        if response.status_code != 200:
-            return False, None
-=======
         try:
             response = await http.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{info.model}:generateContent",
@@ -290,7 +242,6 @@ async def call_provider(
             ) from exc
         if response.status_code != 200:
             raise _http_error(info.name, response)
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         body = response.json()
         content = _extract_gemini_text(body)
         if not content:

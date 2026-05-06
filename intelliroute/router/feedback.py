@@ -6,11 +6,8 @@ anomaly score.
 """
 from __future__ import annotations
 
-<<<<<<< HEAD
-=======
 import json
 import re
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 import threading
 import time
 from dataclasses import dataclass, field
@@ -119,7 +116,6 @@ def compute_hallucination_signal(
     return min(1.0, score)
 
 
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 @dataclass
 class CompletionOutcome:
     """Result from a single completion attempt."""
@@ -131,13 +127,10 @@ class CompletionOutcome:
     completion_tokens: int = 0
     prompt_char_count: int = 1
     response_char_count: int = 0
-<<<<<<< HEAD
-=======
     # Pre-computed hallucination/output-shape score in [0, 1]. The router
     # passes the response text through ``compute_hallucination_signal`` and
     # stores the result here; the EMA collector folds it into anomaly_score.
     hallucination_signal: float = 0.0
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @dataclass
@@ -148,11 +141,6 @@ class ProviderMetrics:
     success_rate_ema: float = 1.0
     token_efficiency_ema: float = 1.0
     anomaly_score: float = 0.0
-<<<<<<< HEAD
-    sample_count: int = 0
-
-
-=======
     quality_score: float = 1.0
     sample_count: int = 0
 
@@ -168,7 +156,6 @@ def _compute_quality_score(success_rate_ema: float, anomaly_score: float) -> flo
     return max(0.0, min(1.0, quality))
 
 
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 class FeedbackCollector:
     """Thread-safe collector of completion outcomes with EMA metric tracking.
 
@@ -238,13 +225,6 @@ class FeedbackCollector:
                         + (1 - self._alpha) * metrics.token_efficiency_ema
                     )
 
-<<<<<<< HEAD
-            # Update anomaly score
-            anomaly = self._detect_anomaly(outcome)
-            metrics.anomaly_score = (
-                self._alpha * anomaly + (1 - self._alpha) * metrics.anomaly_score
-            )
-=======
             # Update anomaly score (latency-shape + hallucination proxy).
             anomaly = max(
                 self._detect_anomaly(outcome),
@@ -256,7 +236,6 @@ class FeedbackCollector:
             metrics.quality_score = _compute_quality_score(
                 metrics.success_rate_ema, metrics.anomaly_score
             )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
     @staticmethod
     def _detect_anomaly(outcome: CompletionOutcome) -> float:
@@ -291,10 +270,7 @@ class FeedbackCollector:
                 success_rate_ema=metrics.success_rate_ema,
                 token_efficiency_ema=metrics.token_efficiency_ema,
                 anomaly_score=metrics.anomaly_score,
-<<<<<<< HEAD
-=======
                 quality_score=metrics.quality_score,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
                 sample_count=metrics.sample_count,
             )
 
@@ -307,10 +283,7 @@ class FeedbackCollector:
                     success_rate_ema=m.success_rate_ema,
                     token_efficiency_ema=m.token_efficiency_ema,
                     anomaly_score=m.anomaly_score,
-<<<<<<< HEAD
-=======
                     quality_score=m.quality_score,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
                     sample_count=m.sample_count,
                 )
                 for name, m in self._metrics.items()

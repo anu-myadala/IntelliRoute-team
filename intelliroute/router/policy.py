@@ -86,11 +86,8 @@ class RoutingPolicy:
         health: dict[str, ProviderHealth],
         intent: Intent,
         latency_budget_ms: int | None = None,
-<<<<<<< HEAD
-=======
         confidence_hint: float | None = None,
         premium_threshold: float = 0.7,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     ) -> list[ScoredProvider]:
         if not providers:
             return []
@@ -151,8 +148,6 @@ class RoutingPolicy:
 
             capability_score = p.capability.get(intent.value, 0.5)
 
-<<<<<<< HEAD
-=======
             # Confidence-gated premium demotion: when the caller signalled
             # low confidence that this request actually needs premium
             # quality, zero out the capability sub-score for tier-3
@@ -164,7 +159,6 @@ class RoutingPolicy:
             ):
                 capability_score = 0.0
 
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             latency_score = _normalize_latency(latency_est, worst_latency)
             cost_score = _normalize_cost(p.cost_per_1k_tokens, worst_cost)
 
@@ -174,8 +168,6 @@ class RoutingPolicy:
             if latency_budget_ms is not None and latency_est > latency_budget_ms:
                 latency_score = 0.0
 
-<<<<<<< HEAD
-=======
             # SLA breach demotion: if the provider declares an SLA for this
             # intent and the observed EMA latency already exceeds it, treat
             # the provider as out-of-spec and zero its latency sub-score so
@@ -184,7 +176,6 @@ class RoutingPolicy:
             if sla_ms is not None and sla_ms > 0 and latency_est > sla_ms:
                 latency_score = 0.0
 
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             score = (
                 weights.latency * latency_score
                 + weights.cost * cost_score
@@ -207,8 +198,6 @@ class RoutingPolicy:
 
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored
-<<<<<<< HEAD
-=======
 
     @staticmethod
     def reorder_after_failure(
@@ -226,4 +215,3 @@ class RoutingPolicy:
         same_or_lower = [s for s in remaining if s.provider.capability_tier <= failed_tier]
         higher = [s for s in remaining if s.provider.capability_tier > failed_tier]
         return same_or_lower + higher
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0

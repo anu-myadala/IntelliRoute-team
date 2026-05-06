@@ -76,8 +76,6 @@ class CompletionRequest(BaseModel):
         default="",
         description="Tenant/team id. Clients may omit this; the gateway overrides it from the authenticated API key.",
     )
-<<<<<<< HEAD
-=======
     team_id: Optional[str] = Field(
         default=None,
         description="Optional team scope for budget/cost governance.",
@@ -86,7 +84,6 @@ class CompletionRequest(BaseModel):
         default=None,
         description="Optional workflow scope for budget/cost governance.",
     )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     messages: list[ChatMessage]
     max_tokens: int = 256
     temperature: float = 0.7
