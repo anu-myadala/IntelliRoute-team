@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import random
 import time
 import uuid
 from typing import Literal, Optional
@@ -66,6 +65,7 @@ log = get_logger("router")
 registry = ProviderRegistry()
 feedback = FeedbackCollector()
 policy = RoutingPolicy(feedback=feedback)
+request_queue = RequestQueue()
 policy_evaluator = PolicyEvaluator()
 request_queue = RequestQueue()
 brownout_manager = BrownoutManager()
@@ -84,6 +84,7 @@ app.add_middleware(
 _http: Optional[httpx.AsyncClient] = None
 _WORKER_COUNT = 4
 _worker_tasks: list[asyncio.Task] = []
+
 _discovery_task: Optional[asyncio.Task] = None
 _routing_mode = os.environ.get("INTELLIROUTE_ROUTING_MODE", "intelliroute").strip().lower()
 _rr_cursor = 0
