@@ -16,10 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-<<<<<<< HEAD
-=======
-import random
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 import time
 import uuid
 from typing import Literal, Optional
@@ -34,26 +30,12 @@ from ..common.logging import get_logger, log_event
 from ..common.mock_provider_catalog import list_mock_provider_infos_from_settings
 from ..common.provider_mode import build_bootstrap_result
 from ..common.models import (
-<<<<<<< HEAD
-=======
     BrownoutStatus,
     ChatMessage,
     CompletionRequest,
     CompletionResponse,
     CostEvent,
     Intent,
-<<<<<<< HEAD
-    ProviderHealth,
-    ProviderInfo,
-    RateLimitCheck,
-)
-from .feedback import CompletionOutcome, FeedbackCollector
-from .intent import classify
-from .policy import RoutingPolicy
-from .provider_clients import ProviderCallError, call_provider
-from .queue import INTENT_PRIORITY, Priority, RequestQueue
-from .registry import ProviderRegistry
-=======
     PolicyEvaluationResult,
     ProviderHealth,
     ProviderHeartbeatRequest,
@@ -77,16 +59,13 @@ from .queue import INTENT_PRIORITY, Priority, RequestQueue
 from .registry import ProviderRegistry
 from .user_feedback_store import CompletionMeta, UserFeedbackStore, format_provider_by_intent_for_prompt
 from .weight_tuner import WeightTuner
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 log = get_logger("router")
 
 registry = ProviderRegistry()
 feedback = FeedbackCollector()
 policy = RoutingPolicy(feedback=feedback)
-<<<<<<< HEAD
 request_queue = RequestQueue()
-=======
 policy_evaluator = PolicyEvaluator()
 request_queue = RequestQueue()
 brownout_manager = BrownoutManager()
@@ -105,8 +84,7 @@ app.add_middleware(
 _http: Optional[httpx.AsyncClient] = None
 _WORKER_COUNT = 4
 _worker_tasks: list[asyncio.Task] = []
-<<<<<<< HEAD
-=======
+
 _discovery_task: Optional[asyncio.Task] = None
 _routing_mode = os.environ.get("INTELLIROUTE_ROUTING_MODE", "intelliroute").strip().lower()
 _rr_cursor = 0
@@ -138,24 +116,17 @@ async def _startup() -> None:
     for i in range(_WORKER_COUNT):
         task = asyncio.create_task(_queue_worker(i))
         _worker_tasks.append(task)
-<<<<<<< HEAD
-=======
     global _discovery_task
     _discovery_task = asyncio.create_task(_discovery_sweep_loop())
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-<<<<<<< HEAD
-    global _worker_tasks
-=======
     global _worker_tasks, _discovery_task
     if _discovery_task is not None:
         _discovery_task.cancel()
         await asyncio.gather(_discovery_task, return_exceptions=True)
         _discovery_task = None
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     if _http is not None:
         await _http.aclose()
     # Cancel worker tasks
@@ -189,10 +160,7 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.93, "reasoning": 0.76, "batch": 0.88, "code": 0.74},
                 cost_per_1k_tokens=0.0007,
                 typical_latency_ms=500,
-<<<<<<< HEAD
-=======
                 capability_tier=2,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             )
         )
     if settings.gemini_api_key:
@@ -205,10 +173,7 @@ def _external_bootstrap() -> list[ProviderInfo]:
                 capability={"interactive": 0.72, "reasoning": 0.97, "batch": 0.68, "code": 0.91},
                 cost_per_1k_tokens=0.0035,
                 typical_latency_ms=1200,
-<<<<<<< HEAD
-=======
                 capability_tier=3,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             )
         )
     return providers
@@ -257,9 +222,6 @@ def _bootstrap_registry() -> None:
 
 @app.get("/health")
 async def health() -> dict:
-<<<<<<< HEAD
-    return {"status": "healthy", "providers": len(registry.all())}
-=======
     now = time.time()
     active = len(registry.all_active(now))
     total = len(registry.all_entries())
@@ -269,20 +231,10 @@ async def health() -> dict:
         "providers_active": active,
         "providers_total": total,
     }
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 @app.post("/providers")
 async def register_provider(p: ProviderInfo) -> dict:
-<<<<<<< HEAD
-    registry.register(p)
-    return {"registered": p.name}
-
-
-@app.delete("/providers/{name}")
-async def deregister_provider(name: str) -> dict:
-    registry.deregister(name)
-=======
     registry.register_bootstrap(p)
     log_event(
         log,
@@ -342,15 +294,11 @@ async def providers_registry() -> dict:
 async def deregister_provider(name: str) -> dict:
     registry.deregister(name)
     log_event(log, "provider_deregistered", name=name)
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     return {"deregistered": name}
 
 
 @app.get("/providers")
 async def list_providers() -> list[ProviderInfo]:
-<<<<<<< HEAD
-    return registry.all()
-=======
     """Routable providers only (same set used before ranking)."""
     return registry.all_active(time.time())
 
@@ -369,7 +317,6 @@ async def _discovery_sweep_loop() -> None:
             break
         except Exception as exc:
             log_event(log, "discovery_sweep_error", error=str(exc))
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 
 
 async def _fetch_health_snapshot() -> dict[str, ProviderHealth]:
@@ -411,8 +358,6 @@ async def _report_health(provider: str, success: bool, latency_ms: float) -> Non
         pass
 
 
-<<<<<<< HEAD
-=======
 def _sla_backoff_ms(provider: ProviderInfo, intent: Intent, attempt: int) -> float:
     """Jittered exponential backoff bounded by the provider's declared SLA.
 
@@ -456,7 +401,6 @@ def _error_backoff_ms(
     return base
 
 
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 async def _publish_cost(event: CostEvent) -> None:
     assert _http is not None
     try:
@@ -467,8 +411,6 @@ async def _publish_cost(event: CostEvent) -> None:
         pass
 
 
-<<<<<<< HEAD
-=======
 async def _fetch_budget_context(req: CompletionRequest) -> dict:
     """Return tenant/team/workflow budget context. Fail-open on errors."""
     assert _http is not None
@@ -642,7 +584,6 @@ async def _prepare_routing(
     return intent, health, candidates, policy_result, bs_model, budget_ctx
 
 
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
 async def _queue_worker(worker_id: int) -> None:
     """Worker coroutine that processes queued requests."""
     while True:
@@ -708,14 +649,6 @@ async def _execute_completion(
     request_id: str, req: CompletionRequest
 ) -> CompletionResponse:
     """Core completion logic: ranking, provider tries, and feedback recording."""
-<<<<<<< HEAD
-    intent = classify(req)
-    health = await _fetch_health_snapshot()
-    ranked = policy.rank(
-        registry.all(), health=health, intent=intent, latency_budget_ms=req.latency_budget_ms
-    )
-    if not ranked:
-=======
     started = time.monotonic()
     intent, health, candidates, pe, bs, budget_ctx = await _prepare_routing(req)
     effective_req = req
@@ -745,7 +678,6 @@ async def _execute_completion(
             latency_ms=(time.monotonic() - started) * 1000,
             success=False,
         )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         raise HTTPException(status_code=503, detail="no providers registered")
 
     _ranked_before_quota = ranked
@@ -770,24 +702,16 @@ async def _execute_completion(
         intent=intent.value,
         routing_mode=routing_mode,
         primary=ranked[0].provider.name,
-<<<<<<< HEAD
-=======
         policy_matched_rules=list(pe.matched_rules) if pe else [],
         policy_blocked=list(pe.blocked_providers) if pe else [],
         policy_complexity=pe.complexity_score if pe else None,
         brownout_active=bs.is_degraded,
         brownout_reason=bs.reason,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
     )
 
     fallback_used = False
     last_error: Optional[str] = None
 
-<<<<<<< HEAD
-    for i, scored in enumerate(ranked):
-        info = scored.provider
-        allowed, retry_ms = await _check_rate_limit(req.tenant_id, info.name)
-=======
     pending: list = list(ranked)
     i = 0
     attempts = 0
@@ -862,21 +786,12 @@ async def _execute_completion(
             continue
 
         allowed, retry_ms = await _check_rate_limit(effective_req.tenant_id, info.name)
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         if not allowed:
             log_event(
                 log, "rate_limited", provider=info.name, retry_after_ms=retry_ms
             )
             last_error = f"rate_limited:{info.name}"
             fallback_used = True
-<<<<<<< HEAD
-            continue
-
-        ok, latency_ms, data = await _call_provider(info, req)
-        asyncio.create_task(_report_health(info.name, ok, latency_ms))
-
-        # Record feedback outcome
-=======
             pending = policy.reorder_after_failure(pending, info.capability_tier)
             i += 1
             attempts += 1
@@ -896,32 +811,20 @@ async def _execute_completion(
             if ok
             else 0.0
         )
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         outcome = CompletionOutcome(
             provider=info.name,
             latency_ms=latency_ms,
             success=ok,
             prompt_tokens=int(data.get("prompt_tokens", 0)) if data else 0,
             completion_tokens=int(data.get("completion_tokens", 0)) if data else 0,
-<<<<<<< HEAD
-            prompt_char_count=len(req.messages[0].content) if req.messages else 1,
-            response_char_count=len(data.get("content", "")) if data else 0,
-=======
             prompt_char_count=prompt_chars,
             response_char_count=len(response_text),
             hallucination_signal=hallucination_signal,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
         )
         feedback.record(outcome)
 
         if not ok:
             log_event(
-<<<<<<< HEAD
-                log, "provider_failed", provider=info.name, latency_ms=latency_ms
-            )
-            last_error = f"provider_failed:{info.name}"
-            fallback_used = True
-=======
                 log,
                 "provider_failed",
                 provider=info.name,
@@ -959,7 +862,6 @@ async def _execute_completion(
                 pending = policy.reorder_after_failure(pending, info.capability_tier)
             i += 1
             attempts += 1
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
             continue
 
         prompt_tokens = int(data.get("prompt_tokens", 0))
@@ -971,13 +873,9 @@ async def _execute_completion(
             _publish_cost(
                 CostEvent(
                     request_id=request_id,
-<<<<<<< HEAD
-                    tenant_id=req.tenant_id,
-=======
                     tenant_id=effective_req.tenant_id,
                     team_id=effective_req.team_id,
                     workflow_id=effective_req.workflow_id,
->>>>>>> 2b788c2948bcc409fd824497816e061092d81ec0
                     provider=info.name,
                     model=info.model,
                     prompt_tokens=prompt_tokens,
