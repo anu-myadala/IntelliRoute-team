@@ -7299,7 +7299,8 @@
                 const brownoutLine = bo && bo.is_degraded
                     ? `Brownout: ${bo.reason} (q=${bo.queue_depth}, p95=${Math.round(bo.p95_latency_ms || 0)}ms)`
                     : '';
-                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${policyLine ? ' | ' + policyLine : ''}${brownoutLine ? ' | ' + brownoutLine : ''}`);
+                const modelLine = data.model ? `Model: ${data.model}` : '';
+                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${modelLine ? ' | ' + modelLine : ''}${policyLine ? ' | ' + policyLine : ''}${brownoutLine ? ' | ' + brownoutLine : ''}`);
                 highlightProvider(data.provider);
 
                 let decideJson = null;
@@ -7375,9 +7376,10 @@
                 handledByText.textContent = 'Handled by LatticeAI';
                 if (handledSubText) {
                     const ms = data.latency_ms != null ? `${data.latency_ms}ms` : null;
+                    const model = data.model ? ` · model ${data.model}` : '';
                     handledSubText.textContent = ms
-                        ? `Automatically optimized for speed, quality, and cost · ${ms}`
-                        : 'Automatically optimized for speed, quality, and cost';
+                        ? `Automatically optimized for speed, quality, and cost · ${ms}${model}`
+                        : `Automatically optimized for speed, quality, and cost${model}`;
                 }
             } else {
                 handledByText.textContent = 'We could not complete this run';
@@ -7423,6 +7425,9 @@
             let metaHtml = '';
             if (meta.provider) {
                 metaHtml += `<span class="meta-badge">🔗 ${escapeHtml(meta.provider)}</span>`;
+            }
+            if (meta.model) {
+                metaHtml += `<span class="meta-badge">🤖 ${escapeHtml(meta.model)}</span>`;
             }
             if (meta.latency) {
                 metaHtml += `<span class="meta-badge">⏱ ${escapeHtml(String(meta.latency))}ms</span>`;

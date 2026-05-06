@@ -90,9 +90,20 @@ async def complete(
     if r.status_code != 200:
         detail = r.json().get("detail", "router error") if _is_json(r) else "router error"
         raise HTTPException(status_code=r.status_code, detail=detail)
-    return CompletionResponse(**r.json())
-
-
+    body = r.json()
+    log_event(
+        log,
+        "completion_served",
+        trace_id=trace_id,
+        tenant=tenant,
+        provider=body.get("provider"),
+        model=body.get("model"),
+        latency_ms=body.get("latency_ms"),
+        total_tokens=body.get("total_tokens"),
+        estimated_cost_usd=body.get("estimated_cost_usd"),
+        fallback_used=body.get("fallback_used"),
+    )
+    return CompletionResponse(**body)
 @app.get("/v1/cost/summary", response_model=CostSummary)
 async def cost_summary(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
