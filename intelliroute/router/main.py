@@ -886,6 +886,7 @@ async def _execute_completion(
             )
         )
 
+
         _record_brownout_result(
             effective_req.tenant_id,
             latency_ms=(time.monotonic() - started) * 1000,
