@@ -868,6 +868,7 @@ async def _execute_completion(
         completion_tokens = int(data.get("completion_tokens", 0))
         total_tokens = prompt_tokens + completion_tokens
         estimated_cost = (total_tokens / 1000.0) * info.cost_per_1k_tokens
+        selected_model = str(data.get("model") or info.model)
 
         asyncio.create_task(
             _publish_cost(
@@ -877,7 +878,7 @@ async def _execute_completion(
                     team_id=effective_req.team_id,
                     workflow_id=effective_req.workflow_id,
                     provider=info.name,
-                    model=info.model,
+                    model=selected_model,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     estimated_cost_usd=estimated_cost,
@@ -898,7 +899,7 @@ async def _execute_completion(
                 request_id=request_id,
                 tenant_id=effective_req.tenant_id,
                 provider=info.name,
-                model=info.model,
+                model=selected_model,
                 intent=intent.value,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -911,10 +912,25 @@ async def _execute_completion(
         )
         if daily_quota_limit(info.name, settings) is not None:
             daily_quota_tracker.record_successful_completion(info.name)
+        log_event(
+            log,
+            "model_selected",
+            request_id=request_id,
+            provider=info.name,
+            model=selected_model,
+            intent=intent.value,
+            latency_ms=round(latency_ms, 2),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost_usd=round(estimated_cost, 6),
+            fallback_used=fallback_used or i > 0,
+            degraded=i > 0,
+        )
         return CompletionResponse(
             request_id=request_id,
             provider=info.name,
-            model=info.model,
+            model=selected_model,
             content=data.get("content", ""),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
