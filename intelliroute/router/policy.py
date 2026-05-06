@@ -197,6 +197,20 @@ class RoutingPolicy:
             )
 
         scored.sort(key=lambda s: s.score, reverse=True)
+
+        # Recovery probe: once the health monitor transitions an OPEN
+        # circuit to HALF_OPEN, give that provider a chance to prove it has
+        # recovered instead of letting stale feedback keep it behind fallback
+        # providers forever. If multiple providers are half-open, preserve
+        # score order within that subset.
+        half_open_names = {
+            name for name, h in health.items() if h.circuit_state == "half_open"
+        }
+        if half_open_names:
+            scored.sort(
+                key=lambda s: (s.provider.name not in half_open_names, -s.score)
+            )
+
         return scored
 
     @staticmethod
