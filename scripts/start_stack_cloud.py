@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +189,23 @@ def _should_start_mock_services() -> bool:
     return not has_external_keys
 
 
+
+def _preflight_imports(services: list[dict[str, Any]]) -> None:
+    """Fail early with a clear traceback if a service module cannot import."""
+    import importlib
+
+    print("running preflight imports...", flush=True)
+    for service in services:
+        module_name = service["module"].split(":", 1)[0]
+        try:
+            importlib.import_module(module_name)
+            print(f"preflight ok: {module_name}", flush=True)
+        except Exception:
+            print(f"preflight failed: {module_name}", file=sys.stderr, flush=True)
+            traceback.print_exc()
+            raise
+
+
 def _wait_ready(proc: subprocess.Popen[bytes], url: str, timeout: float = 45.0) -> None:
     deadline = time.monotonic() + timeout
     last_error = "not checked yet"
@@ -274,6 +292,7 @@ def main() -> int:
 
     base_env = os.environ.copy()
     base_env["PYTHONPATH"] = str(ROOT)
+    base_env["PYTHONUNBUFFERED"] = "1"
 
     # Keep app-level service discovery on localhost even though the gateway binds
     # publicly to 0.0.0.0. The current config.py derives service URLs from
@@ -305,6 +324,8 @@ def main() -> int:
         print(f"provider mode: {_provider_mode()} | mock subprocesses: {'on' if start_mocks else 'off'}", flush=True)
         print(f"public gateway bind: {PUBLIC_HOST}:{PUBLIC_PORT}", flush=True)
         print(f"internal service host: {INTERNAL_HOST}", flush=True)
+
+        _preflight_imports(services)
 
         for service in services:
             _spawn_service(procs, base_env, service)
