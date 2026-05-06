@@ -9549,6 +9549,41 @@
                 if (stateEl) stateEl.textContent = 'internal';
             }
 
+            // 6. Fetch recent traces so curl/external requests appear in the live trace panel
+            try {
+                const r = await fetch(`${ROUTER_API}/traces?limit=1`);
+                if (r.ok) {
+                    const traces = await r.json();
+                    if (traces && traces.length > 0) {
+                        const newest = traces[0];
+                        const currentId = state.lastAdminTrace && state.lastAdminTrace.completion
+                            ? state.lastAdminTrace.completion.request_id
+                            : null;
+                        if (newest.request_id !== currentId) {
+                            const syntheticDecide = {
+                                intent: newest.intent,
+                                ranked: newest.ranked || [],
+                                scores: newest.scores || {},
+                                routing_mode: newest.routing_mode || '—',
+                                policy_evaluation: newest.completion.policy_evaluation || null,
+                                brownout_status: newest.completion.brownout_status || null,
+                            };
+                            state.lastAdminTrace = {
+                                sentAt: newest.sent_at_ms,
+                                intentHint: newest.intent,
+                                requestText: newest.request_text,
+                                requestBody: null,
+                                completion: newest.completion,
+                                decide: syntheticDecide,
+                                error: null,
+                            };
+                            addEvent('routing', `[External] Route to ${newest.completion.provider} (${Math.round(newest.completion.latency_ms)}ms, $${(newest.completion.estimated_cost_usd || 0).toFixed(4)})`);
+                            renderLiveTrace();
+                        }
+                    }
+                }
+            } catch (e) { /* router not yet up */ }
+
             refreshAdminOverviewPanels();
             renderProvidersScreen();
             renderCostQuotasScreen();
