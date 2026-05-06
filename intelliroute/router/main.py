@@ -14,11 +14,12 @@ Responsibilities
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import os
 import time
 import uuid
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -88,6 +89,10 @@ _worker_tasks: list[asyncio.Task] = []
 _discovery_task: Optional[asyncio.Task] = None
 _routing_mode = os.environ.get("INTELLIROUTE_ROUTING_MODE", "intelliroute").strip().lower()
 _rr_cursor = 0
+
+# Ring buffer of the 50 most recent completed traces, newest first.
+# Each entry: {sent_at_ms, request_id, request_text, intent, completion}
+_recent_traces: collections.deque[dict[str, Any]] = collections.deque(maxlen=50)
 
 
 def _get_routing_mode() -> str:
@@ -927,7 +932,7 @@ async def _execute_completion(
             fallback_used=fallback_used or i > 0,
             degraded=i > 0,
         )
-        return CompletionResponse(
+        resp = CompletionResponse(
             request_id=request_id,
             provider=info.name,
             model=selected_model,
@@ -942,6 +947,21 @@ async def _execute_completion(
             policy_evaluation=pe,
             brownout_status=bs,
         )
+        user_msg = next(
+            (m.content for m in reversed(effective_req.messages) if m.role == "user"),
+            "",
+        )
+        _recent_traces.appendleft({
+            "sent_at_ms": int(time.time() * 1000),
+            "request_id": request_id,
+            "request_text": user_msg,
+            "intent": intent.value,
+            "completion": resp.model_dump(),
+            "ranked": [s.provider.name for s in ranked],
+            "scores": {s.provider.name: round(s.score, 4) for s in ranked},
+            "routing_mode": routing_mode,
+        })
+        return resp
 
     _record_brownout_result(
         effective_req.tenant_id,
@@ -1369,6 +1389,13 @@ async def brownout_status() -> BrownoutStatus:
         error_rate=bs.error_rate,
         timeout_rate=bs.timeout_rate,
     )
+
+
+@app.get("/traces")
+async def recent_traces(limit: int = 20) -> list[dict]:
+    """Return the most recent completed request traces for the live-trace UI."""
+    n = max(1, min(limit, 50))
+    return list(_recent_traces)[:n]
 
 
 @app.get("/brownout/metrics")
