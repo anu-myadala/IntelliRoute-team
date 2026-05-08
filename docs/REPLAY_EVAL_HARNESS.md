@@ -2,6 +2,8 @@
 
 This adds a reproducible replay experiment framework around the existing IntelliRoute stack.
 
+> **Prereq:** the harness drives the *running* stack over HTTP. Start it first with `PYTHONPATH=. python3 scripts/start_stack.py` (or `start_stack_cloud.py` against a remote deployment) and then run `replay_eval.py` from a second terminal.
+
 ## What it does
 
 - Generates deterministic workloads for:
@@ -11,45 +13,47 @@ This adds a reproducible replay experiment framework around the existing Intelli
   - `overload_brownout`
 - Replays requests against the real gateway (`/v1/complete`) with deterministic seeds
 - Resets mutable service state before each `(scenario, policy)` run for fair comparisons
-- Switches router mode for comparisons:
+- Switches router mode for comparisons (full set in `intelliroute/eval_harness/types.py::POLICIES`):
   - `intelliroute` (default existing behavior)
   - `round_robin`
   - `cheapest_first`
   - `latency_first`
-  - optional `premium_first`
+  - `premium_first`
 - Exports:
   - quick outputs: `eval_results/results.jsonl`, `eval_results/summary.csv`
   - artifacts per run/matrix under `artifacts/`
 
 ## CLI
 
-Generate workload only:
+> Run from the repo root with `PYTHONPATH=.` so the `intelliroute.eval_harness` package resolves.
 
-`python scripts/generate_workload.py --scenario normal_mixed --size 80 --seed 7 --out eval_results/normal.jsonl`
+Generate a workload only:
+
+`PYTHONPATH=. python3 scripts/generate_workload.py --scenario normal_mixed --size 80 --seed 7 --out eval_results/normal.jsonl`
 
 Run one scenario + one policy:
 
-`python scripts/replay_eval.py --scenario normal_mixed --policy intelliroute --size 60`
+`PYTHONPATH=. python3 scripts/replay_eval.py --scenario normal_mixed --policy intelliroute --size 60`
 
 Run one scenario x all policies:
 
-`python scripts/replay_eval.py --scenario normal_mixed --policy all --size 100 --seed 42`
+`PYTHONPATH=. python3 scripts/replay_eval.py --scenario normal_mixed --policy all --size 100 --seed 42`
 
 Run all scenarios x all policies x 3 generated seeds:
 
-`python scripts/replay_eval.py --scenario all --policy all --size 100 --seed-count 3`
+`PYTHONPATH=. python3 scripts/replay_eval.py --scenario all --policy all --size 100 --seed-count 3`
 
 Run brownout-focused burst replay:
 
-`python scripts/replay_eval.py --scenario overload_brownout --policy all --size 120 --concurrency 12`
+`PYTHONPATH=. python3 scripts/replay_eval.py --scenario overload_brownout --policy all --size 120 --concurrency 12`
 
 Disable automatic reset/isolation (debug only):
 
-`python scripts/replay_eval.py --scenario normal_mixed --policy all --size 40 --no-reset`
+`PYTHONPATH=. python3 scripts/replay_eval.py --scenario normal_mixed --policy all --size 40 --no-reset`
 
 Use explicit seeds:
 
-`python scripts/replay_eval.py --scenario all --policy all --size 100 --seeds 11,22,33`
+`PYTHONPATH=. python3 scripts/replay_eval.py --scenario all --policy all --size 100 --seeds 11,22,33`
 
 ## Result record schema
 
@@ -135,14 +139,14 @@ If reset fails:
 
 Reset endpoints used:
 
-- `POST /reset` on router
-- `POST /reset` on cost tracker
-- `POST /reset` on health monitor
-- `POST /reset` on rate limiter replicas
+- `POST /reset` on the router (clears feedback, brownout, queue, tuner, routing mode, daily quotas, user feedback)
+- `POST /reset` on the cost tracker (clears tenant/team/workflow rollups and budgets)
+- `POST /reset` on the health monitor (clears all circuit breakers)
+- `POST /reset` on each configured rate-limiter replica (default `8002`, `8012`, `8022`)
 
 Mock recovery uses:
 
-- `INTELLIROUTE_MOCK_PROVIDER_ADMIN_URLS` (comma-separated admin URLs), defaulting to the three local mock providers.
+- `INTELLIROUTE_MOCK_PROVIDER_ADMIN_URLS` (comma-separated admin URLs), defaulting to the three local mock providers — calls `POST /admin/reset` on each so any forced fail/timeout/rate-limit/malformed flag from a previous run is cleared.
 
 ## Scenario Intent and Calibration
 

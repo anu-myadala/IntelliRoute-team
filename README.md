@@ -3,26 +3,30 @@
 **A distributed control plane for multi-LLM orchestration.**
 
 CMPE 273 — Enterprise Distributed Systems, Spring 2026, San José State University.
-
 **Team:** Anukrithi Myadala, Larry Nguyen, James Pham, Surbhi Singh.
 
-IntelliRoute is a multi-service distributed system that sits between
-applications and LLM providers (OpenAI, Anthropic, local open-source
-models, …) and turns them into a single, governed compute resource. It
-classifies each request by intent, picks the best provider with a
-multi-objective scoring policy, enforces distributed rate limits,
-fails over automatically when providers degrade, and tracks cost per
-tenant — all while exposing the internal state needed for observability.
+IntelliRoute sits between client applications and LLM providers (OpenAI, Anthropic, Groq, Gemini, local open-source models) and turns them into a single, governed compute resource. It classifies each request by intent, picks the best provider with a multi-objective scoring policy, enforces distributed rate limits via a leader-elected token-bucket cluster, fails over automatically when providers degrade, tracks cost per tenant / team / workflow, and exposes the internal state needed for live observability via a web dashboard.
+
+---
+
+## For the professor — the 60-second version
+
+- **What it is:** a Python/FastAPI microservices system (gateway, router, rate limiter, cost tracker, health monitor, mock providers) that demonstrates the major distributed-systems concepts from CMPE 273 in a single coherent project.
+- **How to run it:** create a venv, `pip install -e .[dev]`, then `PYTHONPATH=. python3 scripts/start_stack.py`. Open `http://127.0.0.1:3000` for the live demo dashboard, or call `http://127.0.0.1:8000` directly with the demo API key. Full step-by-step in [Quick start](#quick-start).
+- **How to verify it works:** `PYTHONPATH=. python3 -m pytest tests/` runs the **265-test** suite (252 unit + 13 end-to-end integration tests that spawn the full stack on ephemeral ports). Should finish in ~12 s on a laptop.
+- **Where the distributed-systems concepts live:** see the [concept map](#distributed-systems-concepts-demonstrated) — it's a per-topic table that points to the exact module that implements each concept.
+- **Demo-able failure modes:** force-fail a provider, exhaust a token bucket, kill a rate-limiter replica, drive the system into brownout — all live, all visible from the dashboard. See [Live demo walkthrough](#live-demo-walkthrough).
+- **Architecture deep dive:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Replay-harness usage: [`docs/REPLAY_EVAL_HARNESS.md`](docs/REPLAY_EVAL_HARNESS.md).
 
 ---
 
 ## Table of contents
 
-1. [Why this exists](#why-this-exists)
-2. [What it does](#what-it-does)
-3. [Architecture](#architecture)
-4. [Distributed-systems concepts demonstrated](#distributed-systems-concepts-demonstrated)
-5. [**Quick start for teammates** (setup, run, test, demo)](#quick-start-for-teammates)
+1. [What it does](#what-it-does)
+2. [Architecture](#architecture)
+3. [Distributed-systems concepts demonstrated](#distributed-systems-concepts-demonstrated)
+4. [Quick start](#quick-start)
+5. [Live demo walkthrough](#live-demo-walkthrough)
 6. [Project layout](#project-layout)
 7. [API surface](#api-surface)
 8. [Configuration](#configuration)
@@ -31,572 +35,495 @@ tenant — all while exposing the internal state needed for observability.
 
 ---
 
-## Why this exists
-
-Organisations integrating multiple LLM providers face a familiar set of
-distributed-systems problems:
-
-- **Unpredictable latency** across providers and regions.
-- **Fragmented rate limits and quotas** that have to be enforced across
-  many client services.
-- **Escalating, opaque costs.**
-- **No unified place to make routing decisions** that balance cost,
-  latency, accuracy, and availability.
-- **No system-level optimisation** across heterogeneous workloads
-  (interactive, reasoning, batch, code).
-
-IntelliRoute addresses these by treating LLMs as **distributed compute
-resources behind a control plane**, not as isolated APIs.
-
 ## What it does
 
-1. **Intent-aware routing.** Each request is classified into one of
-   `interactive`, `reasoning`, `batch`, or `code`. The routing policy
-   picks the best provider for that intent.
-2. **Multi-objective scoring.** Providers are ranked by a weighted
-   combination of latency, cost, capability, and historical success
-   rate. Weights vary per intent.
-3. **Distributed rate limiting.** A token-bucket service enforces
-   per-tenant, per-provider quotas. The bucket store is the
-   authoritative leader; followers replicate from a replication log.
-4. **Adaptive fallback.** If the primary provider is rate-limited or
-   the circuit breaker is open, the router automatically tries the
-   next-best provider. If none are healthy, it returns a structured
-   error rather than blocking.
-5. **Cost-aware accounting.** Cost events are published asynchronously
-   to a tracker that maintains per-tenant rollups and fires
-   budget-exceeded alerts.
-6. **Observability surface.** Every service emits structured JSON logs;
-   the gateway exposes aggregate health and cost views.
+1. **Intent-aware routing.** Each request is classified into one of `interactive`, `reasoning`, `batch`, or `code`. The routing policy picks the best provider for that intent.
+2. **Multi-objective scoring.** Providers are ranked by a weighted combination of latency, cost, capability, and historical success rate. Weights vary per intent and are auto-tuned online by an EMA-driven `WeightTuner`.
+3. **Distributed rate limiting with leader election.** Three token-bucket replicas run on `:8002`, `:8012`, `:8022`. They elect a leader using a bully-style protocol; followers forward `/check` calls to the leader and tail its replication log so state converges.
+4. **Adaptive fallback + circuit breakers.** A three-state breaker (`closed → open → half_open`) per provider trips after consecutive failures; the router skips tripped or rate-limited providers and tries the next-best one. SLA-aware retries with jittered exponential back-off.
+5. **Brownout / load shedding.** Under sustained queue depth, p95 latency, error rate, or timeout rate breaches, the router enters brownout and degrades gracefully (drops or delays low-priority traffic, blocks premium providers, clamps `max_tokens`). Per-tenant brownout state on top of global state.
+6. **Priority queue + workers.** Four async worker tasks drain a priority queue. HIGH (interactive, code) bypasses the queue; MEDIUM (reasoning) and LOW (batch) go through. Load shedding when depth exceeds configured threshold.
+7. **Cost-aware accounting.** Cost events are published asynchronously to a tracker that maintains tenant / team / workflow rollups, headroom checks, and budget-exceeded alerts. Pre-call budget gate demotes to a cheaper provider when the projected cost would push over budget.
+8. **Per-provider daily quotas.** Opt-in UTC daily caps on successful completions per provider; quota-exhausted providers are skipped in the fallback chain.
+9. **Dynamic service discovery.** Providers can self-register with a TTL lease and refresh via heartbeats. The router tracks active vs. stale providers and exposes both via `/providers` and `/providers/registry`.
+10. **User feedback loop.** Every completion is persisted to a SQLite store (`artifacts/user_feedback.sqlite3`) along with a prompt/response preview. The dashboard lets users rate completions and triggers an LLM-powered analysis of recent feedback (sample-stratified, cached by revision).
+11. **Observability dashboard.** A static HTML/JS frontend on `:3000` shows live provider health, routing visualization, leader-election state, cost rollups, queue depth, brownout status, and a 50-trace ring buffer of recent requests.
 
 ## Architecture
 
 ```
-                ┌──────────────────────────────────────────────────┐
-                │                                                  │
-   client ──▶  Gateway  ──sync(HTTP)───────▶  Router  ──▶  Mock LLM Providers
-   (X-API-Key)   :8000                        :8001            :9001 mock-fast
-                                  │                             :9002 mock-smart
-                                  │                             :9003 mock-cheap
-                                  ├──sync──▶  Rate Limiter  :8002
-                                  │              (leader + replication log)
-                                  ├──sync──▶  Health Monitor :8004
-                                  │              (circuit breakers + polling)
-                                  └──async─▶  Cost Tracker  :8003
-                                                 (per-tenant rollups + alerts)
+                ┌──────────────────────────────────────────────────────┐
+                │                                                      │
+   client ──▶  Gateway  ──HTTP─▶  Router  ──HTTP─▶  Mock Providers
+   (X-API-Key)  :8000             :8001               :9001 mock-fast
+                                    │                 :9002 mock-smart
+                                    │                 :9003 mock-cheap
+                                    │              + optional Groq / Gemini
+                                    │
+                                    ├──HTTP─▶  Rate Limiter cluster
+                                    │              :8002 rl-0
+                                    │              :8012 rl-1   (leader-elected)
+                                    │              :8022 rl-2
+                                    │
+                                    ├──HTTP─▶  Health Monitor :8004
+                                    │              (circuit breakers + polling)
+                                    │
+                                    └──async─▶  Cost Tracker  :8003
+                                                 (tenant / team / workflow rollups + alerts)
+
+   Dashboard (static)    http://127.0.0.1:3000   (talks to gateway over CORS)
 ```
 
-Six service types, all written in Python with FastAPI:
+Eleven processes total: 5 platform services (gateway, router, cost tracker, health monitor) + 3 rate-limiter replicas + 3 mock providers + 1 static HTTP server for the frontend.
 
-| Service        | Port      | Responsibility                                                    |
-|----------------|-----------|-------------------------------------------------------------------|
-| Gateway        | 8000      | Public entry point, API-key auth, request tracing                 |
-| Router         | 8001      | Intent classification, multi-objective ranking, fallback control  |
-| Rate Limiter   | 8002      | Distributed token-bucket, replication log                         |
-| Cost Tracker   | 8003      | Async cost events, per-tenant rollups, budget alerts              |
-| Health Monitor | 8004      | Per-provider circuit breakers, periodic liveness polling          |
-| Mock Providers | 9001-9003 | Three simulated upstream LLMs with distinct latency/cost profiles |
+| Service        | Port(s)             | Responsibility                                                        |
+|----------------|---------------------|-----------------------------------------------------------------------|
+| Gateway        | 8000                | Public entry point, API-key auth, request tracing                     |
+| Router         | 8001                | Intent classification, multi-objective ranking, fallback, queue, brownout |
+| Rate Limiter   | 8002 / 8012 / 8022  | Distributed token-bucket; leader-elected; replication log             |
+| Cost Tracker   | 8003                | Async cost events; tenant/team/workflow rollups; budget alerts        |
+| Health Monitor | 8004                | Per-provider circuit breakers; periodic liveness polling              |
+| Mock Providers | 9001 / 9002 / 9003  | Three simulated upstream LLMs; configurable latency/cost/failure      |
+| Frontend       | 3000                | Static HTML/JS dashboard served via `python -m http.server`           |
 
 ## Distributed-systems concepts demonstrated
 
-This project intentionally maps to the major themes of CMPE 273:
-
-| Course topic                       | Where it lives in IntelliRoute                                                                                          |
-|------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
-| Service discovery / naming         | `intelliroute/router/registry.py` — `ProviderRegistry` is the in-memory analogue of Consul/etcd                         |
-| Communication: sync + async        | HTTP between gateway/router/limiter; fire-and-forget async cost events to the cost tracker                              |
-| Coordination & leader election     | `RateLimiterStore` exposes a `leader_id` and a replication log; followers tail the log and replay state                 |
-| Consistency & replication          | Strong consistency for rate-limit decisions (single leader); eventual consistency for cost rollups                      |
-| Fault tolerance & graceful degrade | Circuit breakers per provider (`health_monitor/circuit_breaker.py`) plus router fallback chain                          |
-| Backpressure & queueing            | The rate limiter is the explicit backpressure mechanism; the router treats throttle responses as a fallback signal     |
-| Multi-objective optimisation       | `router/policy.py` — providers ranked on (latency, cost, capability, success) with intent-specific weights              |
-| Security                           | API-key auth at the gateway; tenant identity is rewritten from the authenticated principal, not from the request body  |
-| Observability                      | Structured JSON logger (`common/logging.py`), `/snapshot` endpoints, X-Request-Id propagation through the gateway      |
+| Course topic                       | Where it lives in IntelliRoute                                                                           |
+|------------------------------------|----------------------------------------------------------------------------------------------------------|
+| Service discovery / naming         | `intelliroute/router/registry.py` — bootstrap + dynamic leases; in-memory analogue of Consul/etcd        |
+| Lease-based liveness               | Mock providers self-register and call `POST /providers/heartbeat`; expired leases mark providers stale   |
+| Communication: sync + async        | HTTP between gateway/router/limiter; fire-and-forget async cost events to the cost tracker               |
+| Coordination & leader election     | `intelliroute/rate_limiter/election.py` — bully-style election across 3 replicas; followers forward writes |
+| Replication & consistency          | Strong consistency for rate-limit decisions (single leader; opt-in fail-closed mode); eventual via replication log |
+| Fault tolerance                    | `intelliroute/health_monitor/circuit_breaker.py` (3-state breaker) + router fallback chain               |
+| Adaptive retry / back-off          | SLA-aware jittered exponential back-off in `intelliroute/router/main.py::_error_backoff_ms`              |
+| Backpressure & queueing            | `intelliroute/router/queue.py` priority queue + 4 worker tasks; load shedding above configured depth     |
+| Graceful degradation / brownout    | `intelliroute/router/brownout.py` — global + per-tenant brownout based on queue, p95, error/timeout rate |
+| Multi-objective optimisation       | `intelliroute/router/policy.py` + `policy_engine/` — latency × cost × capability × success scoring       |
+| Online learning                    | `intelliroute/router/weight_tuner.py` rebalances per-intent weights from observed sub-score outcomes     |
+| Budget governance                  | `intelliroute/cost_tracker/accounting.py` — tenant / team / workflow budgets, premium caps, alerts       |
+| Security                           | API-key auth at the gateway; tenant identity rewritten from the authenticated principal, not the body    |
+| Observability                      | `intelliroute/common/logging.py` JSON logger; `/snapshot`, `/stats`, `/traces` endpoints; X-Request-Id   |
 
 ---
 
-## Quick start for teammates
+## Quick start
 
-**Target audience:** Anukrithi, Larry, James, Surbhi. Follow these exact
-steps on a fresh clone and you will have a running, fully-tested
-IntelliRoute stack in under 5 minutes. Tested on macOS and Linux with
-Python 3.10+.
+Tested on macOS and Linux with **Python 3.10+**. Need ports `8000-8004`, `8012`, `8022`, `9001-9003`, and `3000` free on localhost.
 
-### Prerequisites
-
-- **Python 3.10 or newer.** Check with `python3 --version`.
-- **pip** (comes with Python).
-- Ports **8000-8004** and **9001-9003** free on localhost.
-
-### Step 1 — Get the code
-
-Unzip the project (or `git clone` it) and `cd` into it:
+### 1. Install
 
 ```bash
-cd intelliroute
-```
-
-You should see `README.md`, `pyproject.toml`, and the folders
-`intelliroute/`, `tests/`, and `scripts/`.
-
-### Step 1.5 — Add your API keys (optional, enables real models)
-
-If you want IntelliRoute to call live models instead of the local mock
-providers, create a project-root `.env` file from the included example and
-paste in your keys:
-
-```bash
-cp .env.example .env
-```
-
-Then edit `.env` and set:
-
-```env
-GEMINI_API_KEY=your_key_here
-GROQ_API_KEY=your_key_here
-```
-
-With either key present, the router automatically boots the real provider(s).
-With both keys present, IntelliRoute will prefer **Groq** for fast / cheaper
-interactive and batch-style prompts, and **Gemini** for heavier reasoning and
-code-oriented prompts. Set `INTELLIROUTE_USE_MOCKS=1` if you want to force the
-old local demo providers instead.
-
-### Step 2 — Install dependencies
-
-We recommend a virtualenv so you don't pollute system Python:
-
-```bash
+git clone <repo-url> IntelliRoute-team
+cd IntelliRoute-team
 python3 -m venv .venv
-source .venv/bin/activate        # on Windows: .venv\Scripts\activate
+source .venv/bin/activate                # Windows: .venv\Scripts\activate
 pip install --upgrade pip
-pip install fastapi "uvicorn[standard]" httpx pydantic pytest pytest-asyncio
+pip install -e ".[dev]"
 ```
 
-That is the complete dependency list. There are no build steps, no
-compiled extensions, and no external databases.
+The package metadata (`pyproject.toml`) declares all runtime + dev dependencies: `fastapi`, `uvicorn`, `httpx`, `pydantic`, `pytest`, `pytest-asyncio`. No databases, no compiled extensions, no Docker required.
 
-### Step 3 — Run the full test suite
-
-This is the fastest way to confirm your environment is working. The
-suite has **42 tests**: 35 unit tests and 7 integration tests that
-actually spawn the entire 8-process stack and hit it over HTTP.
-
-From the `intelliroute/` directory:
+### 2. Run the test suite
 
 ```bash
-PYTHONPATH=. python3 -m pytest tests/ -v
+PYTHONPATH=. python3 -m pytest tests/
 ```
 
-Expected outcome:
+Expected: **`265 passed in ~12s`**. The suite includes 13 integration tests in [`tests/test_integration.py`](tests/test_integration.py) that spawn the full 10-process backend on ephemeral ports and exercise it over real HTTP — they're the single fastest way to confirm a fresh clone is healthy.
 
-```
-============================== 42 passed in ~2s ==============================
-```
-
-If anything fails, re-read the prerequisites (likely Python version or
-a port collision). You can run just the pure unit tests (no
-subprocesses) with:
+To skip the integration tests (faster iteration, no port allocation):
 
 ```bash
-PYTHONPATH=. python3 -m pytest tests/ -v --ignore=tests/test_integration.py
+PYTHONPATH=. python3 -m pytest tests/ --ignore=tests/test_integration.py
 ```
 
-### Step 4 — Launch the system
-
-Open **two terminals**.
-
-**Terminal 1 — start the stack:**
+### 3. Launch the stack
 
 ```bash
-cd intelliroute
-source .venv/bin/activate
 PYTHONPATH=. python3 scripts/start_stack.py
 ```
 
-If `.env` contains `GEMINI_API_KEY` and/or `GROQ_API_KEY`, the stack will use
-those live providers automatically. Otherwise it will launch the original mock
-providers for the classroom demo.
-
-You should see ten "starting ..." lines (gateway, router, 3 rate
-limiter replicas, health monitor, cost tracker, 3 mock providers) plus
-a frontend server, followed by:
+You will see ten "starting …" lines (3 mocks, 3 rate-limiter replicas, cost tracker, health monitor, router, gateway) plus a frontend line, ending with:
 
 ```
 IntelliRoute stack running.
+  Providers:  mock demo provider processes + router bootstrap (see INTELLIROUTE_PROVIDER_MODE)
   Gateway:    http://127.0.0.1:8000
   Frontend:   http://127.0.0.1:3000
   Press Ctrl-C to stop.
 ```
 
-Open **http://127.0.0.1:3000** in a browser to use the **live demo
-dashboard** (dark-themed UI with chat, provider health, routing
-visualization, cost tracker, and leader election status).
+Open **http://127.0.0.1:3000** in any modern browser for the live dashboard (chat panel, provider health, routing visualization, leader election, cost tracker, queue/brownout state, traces, and feedback analytics).
 
-**Terminal 2 — run the demo client (optional, CLI alternative):**
+### 4. (Optional) Use real providers
 
-```bash
-cd intelliroute
-source .venv/bin/activate
-PYTHONPATH=. python3 scripts/demo.py
+By default the stack uses the three mock providers — perfect for the classroom demo and for grading, since it has no rate limits or API costs.
+
+To call live models, drop a `.env` file in the repo root with one or both of:
+
+```env
+GROQ_API_KEY=...
+GEMINI_API_KEY=...
 ```
 
-Expected output (numbers will vary by a few ms):
+The router will register the corresponding provider(s) at startup. Set `INTELLIROUTE_USE_MOCKS=1` (or `INTELLIROUTE_PROVIDER_MODE=mock_only`) to force mock-only routing even if keys are present — useful for offline testing.
 
-```
-[interactive small-talk] -> mock-fast (fast-1)  latency=35ms  cost=$0.000024 fallback=False
-[reasoning]              -> mock-smart (smart-1) latency=138ms cost=$0.001560 fallback=False
-[batch summarisation]    -> mock-cheap (cheap-1) latency=95ms  cost=$0.000006 fallback=False
-[code]                   -> mock-fast (fast-1)  latency=26ms  cost=$0.000044 fallback=False
+### 5. Stop the stack
 
-Cost summary:
-{
-  "tenant_id": "demo-tenant",
-  "total_requests": 4,
-  "total_tokens": 133,
-  "total_cost_usd": 0.001634,
-  ...
-}
-```
-
-**What this proves:**
-
-- Intent classification: short chat → `interactive`, long "explain step
-  by step" → `reasoning`, "summarize the following" → `batch`,
-  traceback keyword → `code`.
-- Routing policy: interactive and code pick `mock-fast` (low latency),
-  reasoning picks `mock-smart` (highest capability for reasoning), and
-  batch picks `mock-cheap` (lowest cost).
-- Async cost tracker: the summary query hits a different service
-  (port 8003) and reflects all 4 requests.
-
-### Step 5 — Demo the failure modes (for the class presentation)
-
-With the stack still running in Terminal 1, exercise each
-distributed-systems concept live in Terminal 2.
-
-**(a) Routing introspection — see the policy ranking without executing:**
-
-```bash
-curl -s -X POST http://127.0.0.1:8001/decide \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id":"demo-tenant","messages":[{"role":"user","content":"Explain step by step the CAP theorem and analyze the tradeoffs in practice, with enough context to be considered reasoning."}]}' | python3 -m json.tool
-```
-
-You should see `"intent": "reasoning"` and `"mock-smart"` first in the ranking.
-
-**(b) Automatic failover — knock out the top provider:**
-
-```bash
-# Force mock-fast into failing mode
-curl -s -X POST http://127.0.0.1:9001/admin/force_fail \
-  -H "Content-Type: application/json" -d '{"fail": true}'
-
-# Send an interactive request - router should fall back to another provider
-curl -s -X POST http://127.0.0.1:8000/v1/complete \
-  -H "X-API-Key: demo-key-123" \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id":"x","messages":[{"role":"user","content":"hi"}]}' | python3 -m json.tool
-
-# Look at the breaker state - after a few failures it should be 'open'
-curl -s http://127.0.0.1:8004/snapshot | python3 -m json.tool
-
-# Restore
-curl -s -X POST http://127.0.0.1:9001/admin/force_fail \
-  -H "Content-Type: application/json" -d '{"fail": false}'
-```
-
-**(c) Distributed rate limiting — tighten the bucket at runtime:**
-
-```bash
-# Shrink the bucket for (demo-tenant, mock-cheap) to 1 token, glacial refill
-curl -s -X POST http://127.0.0.1:8002/config \
-  -H "Content-Type: application/json" \
-  -d '{"key":"demo-tenant|mock-cheap","capacity":1,"refill_rate":0.01}'
-
-# First batch request uses the single token - routes to mock-cheap
-curl -s -X POST http://127.0.0.1:8000/v1/complete \
-  -H "X-API-Key: demo-key-123" \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id":"x","messages":[{"role":"user","content":"Summarize the following document into bullet points"}]}' | python3 -m json.tool
-
-# Second batch request - bucket is empty, router falls back
-curl -s -X POST http://127.0.0.1:8000/v1/complete \
-  -H "X-API-Key: demo-key-123" \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id":"x","messages":[{"role":"user","content":"Summarize the following document into bullet points"}]}' | python3 -m json.tool
-# expect: "fallback_used": true, "provider" is NOT "mock-cheap"
-
-# Reset
-curl -s -X POST http://127.0.0.1:8002/config \
-  -H "Content-Type: application/json" \
-  -d '{"key":"demo-tenant|mock-cheap","capacity":10,"refill_rate":1.0}'
-```
-
-**(d) Cost tracking — per-tenant rollup:**
-
-```bash
-curl -s http://127.0.0.1:8000/v1/cost/summary \
-  -H "X-API-Key: demo-key-123" | python3 -m json.tool
-```
-
-**(e) Replication log — see the leader's decision stream:**
-
-```bash
-curl -s http://127.0.0.1:8002/log | python3 -m json.tool
-curl -s http://127.0.0.1:8002/leader
-```
-
-### Step 6 — Shut down
-
-In Terminal 1, hit **Ctrl-C**. All eight subprocesses will be signalled
-and terminate cleanly.
+`Ctrl-C` in the terminal running `start_stack.py`. The launcher cleanly signals every child process and waits up to 5 s before killing.
 
 ### Troubleshooting
 
 | Symptom                                              | Fix                                                                                       |
 |------------------------------------------------------|-------------------------------------------------------------------------------------------|
-| `ModuleNotFoundError: intelliroute`                  | Make sure you prefixed the command with `PYTHONPATH=.` and are in the `intelliroute/` root |
-| `Address already in use` when starting               | Something else is on 8000-8004 or 9001-9003. Change the ports via env vars (see Configuration) |
-| `httpx.ConnectError` from the demo                   | Terminal 1's stack didn't come up yet; wait for the "running" line                         |
-| Integration tests hang                               | A previous run left subprocesses behind: `pkill -f "uvicorn intelliroute"`                |
-| Unit tests pass but integration fails                | Almost always a port collision. Check `lsof -iTCP:8000-8004,9001-9003`                     |
+| `ModuleNotFoundError: intelliroute`                  | Prefix the command with `PYTHONPATH=.` and run from the repo root                         |
+| `Address already in use` when starting               | Something else is on 8000-8004, 8012, 8022, 9001-9003, or 3000. Free it (`lsof -nP -iTCP:8000`) or override with the env vars in [Configuration](#configuration) |
+| `Errno 48` on the frontend line                      | Port 3000 is busy. Run `INTELLIROUTE_FRONTEND_PORT=3005 PYTHONPATH=. python3 scripts/start_stack.py` |
+| Integration tests hang                               | Stale subprocesses from a previous run: `pkill -f "uvicorn intelliroute"`                 |
+| Tests pass but the stack won't start                 | Almost always a port collision: `lsof -nP -iTCP:8000-8004,8012,8022,9001-9003,3000`        |
+
+---
+
+## Live demo walkthrough
+
+With the stack running, exercise each distributed-systems concept from a second terminal. Everything below is also visible on the dashboard.
+
+The default demo API key is `demo-key-123` (mapped to `demo-tenant`).
+
+**(a) End-to-end completions across all four intents**
+
+```bash
+PYTHONPATH=. python3 scripts/demo.py
+```
+
+Sends one request per intent (interactive / reasoning / batch / code), prints which provider was chosen and the latency/cost, then prints the cost summary, feedback EMA snapshot, queue stats, and leader-election state.
+
+**(b) Routing introspection — see the ranked decision without executing**
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/decide \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"demo-tenant","messages":[{"role":"user","content":"Explain step by step the CAP theorem and analyze the tradeoffs."}]}' \
+  | python3 -m json.tool
+```
+
+Returns the classified intent, ranked provider list, sub-scores, matched policy rules, and brownout state.
+
+**(c) Automatic failover via the circuit breaker**
+
+```bash
+# Force mock-fast to fail every request
+curl -s -X POST http://127.0.0.1:9001/admin/force_fail \
+  -H "Content-Type: application/json" -d '{"fail": true}'
+
+# Send an interactive request — the router should fall back
+curl -s -X POST http://127.0.0.1:8000/v1/complete \
+  -H "X-API-Key: demo-key-123" -H "Content-Type: application/json" \
+  -d '{"tenant_id":"x","messages":[{"role":"user","content":"hi"}]}' | python3 -m json.tool
+
+# Check breaker state — after a few failures the breaker should be 'open'
+curl -s http://127.0.0.1:8004/snapshot | python3 -m json.tool
+
+# Restore
+curl -s -X POST http://127.0.0.1:9001/admin/force_fail -d '{"fail": false}'
+```
+
+There's also a scripted version: `PYTHONPATH=. python3 scripts/demo_failure_recovery.py`. It walks the breaker through `closed → open → half_open → closed` and prints the snapshot at each step.
+
+The mock providers also expose `/admin/force_timeout`, `/admin/force_rate_limit`, and `/admin/force_malformed` for the other failure modes.
+
+**(d) Distributed rate limiting at runtime**
+
+```bash
+# Shrink (demo-tenant, mock-cheap) to 1 token, glacial refill
+curl -s -X POST http://127.0.0.1:8002/config \
+  -H "Content-Type: application/json" \
+  -d '{"key":"demo-tenant|mock-cheap","capacity":1,"refill_rate":0.01}'
+
+# First batch request — uses the single token, routes to mock-cheap
+curl -s -X POST http://127.0.0.1:8000/v1/complete \
+  -H "X-API-Key: demo-key-123" -H "Content-Type: application/json" \
+  -d '{"tenant_id":"x","messages":[{"role":"user","content":"Summarize the following document into bullet points"}]}' \
+  | python3 -m json.tool
+
+# Second request — bucket is empty, router falls back, "fallback_used": true
+```
+
+**(e) Leader election — kill the leader and watch failover**
+
+```bash
+# See current state across all 3 replicas
+for p in 8002 8012 8022; do curl -s http://127.0.0.1:$p/election/status; echo; done
+
+# Find which replica is the leader, then kill it (replace <PID>)
+lsof -nP -iTCP:8002 -sTCP:LISTEN
+kill <PID>
+
+# Within a few seconds the survivors elect a new leader
+for p in 8012 8022; do curl -s http://127.0.0.1:$p/election/status; echo; done
+```
+
+**(f) Cost rollups and budget alerts**
+
+```bash
+# Per-tenant rollup
+curl -s http://127.0.0.1:8000/v1/cost/summary -H "X-API-Key: demo-key-123" | python3 -m json.tool
+
+# Set a $0.001 budget for demo-tenant and watch the alert fire
+curl -s -X POST http://127.0.0.1:8003/budget \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"demo-tenant","budget_usd":0.001}'
+
+# Drive a few requests, then:
+curl -s http://127.0.0.1:8003/alerts | python3 -m json.tool
+```
+
+**(g) Replay-based scenario evaluation** *(advanced — for the report)*
+
+```bash
+PYTHONPATH=. python3 scripts/replay_eval.py --scenario all --policy all --size 100 --seed-count 3
+```
+
+Replays a deterministic workload across `intelliroute`, `round_robin`, `cheapest_first`, `latency_first`, and `premium_first` policies under four scenarios (`normal_mixed`, `degraded_provider`, `budget_pressure`, `overload_brownout`) and writes per-run + aggregate artifacts to `artifacts/`. See [`docs/REPLAY_EVAL_HARNESS.md`](docs/REPLAY_EVAL_HARNESS.md).
 
 ---
 
 ## Project layout
 
 ```
-intelliroute/
-├── README.md                       <-- you are here
-├── REPORT.docx                     <-- formal project report
-├── pyproject.toml                  <-- package metadata, pytest config
-├── intelliroute/                   <-- source code (the Python package)
+IntelliRoute-team/
+├── README.md                          <-- you are here
+├── CHANGELOG.md
+├── pyproject.toml                     <-- package metadata & pytest config
+├── requirements.txt                   <-- pip-style mirror of dependencies
+├── docs/
+│   ├── ARCHITECTURE.md                <-- service-by-service architecture deep dive
+│   ├── REPLAY_EVAL_HARNESS.md         <-- evaluation harness usage
+│   ├── PROVIDER_QUALITY_SCORE.md
+│   └── TEAM_WORKFLOW_BUDGETS.md
+├── intelliroute/                      <-- Python source package
 │   ├── common/
-│   │   ├── models.py               <-- Pydantic over-the-wire types
-│   │   ├── config.py               <-- Settings / env-var parsing
-│   │   └── logging.py              <-- JSON structured logger
-│   ├── gateway/main.py             <-- Public-facing API (port 8000)
+│   │   ├── config.py                  <-- env-driven Settings dataclass
+│   │   ├── env.py                     <-- minimal .env loader
+│   │   ├── logging.py                 <-- JSON structured logger
+│   │   ├── models.py                  <-- shared Pydantic over-the-wire types
+│   │   ├── mock_provider_catalog.py   <-- shared mock ProviderInfo definitions
+│   │   └── provider_mode.py           <-- mock_only / external_only / hybrid / auto
+│   ├── gateway/main.py                <-- public API (port 8000)
 │   ├── router/
-│   │   ├── main.py                 <-- Router service (port 8001)
-│   │   ├── intent.py               <-- Intent classifier
-│   │   ├── policy.py               <-- Multi-objective routing policy
-│   │   └── registry.py             <-- In-memory service registry
+│   │   ├── main.py                    <-- routing pipeline + queue workers
+│   │   ├── intent.py                  <-- deterministic intent classifier
+│   │   ├── policy.py                  <-- multi-objective ranking
+│   │   ├── policy_engine/             <-- declarative pre-rank policy rules
+│   │   ├── registry.py                <-- service registry (bootstrap + leases)
+│   │   ├── feedback.py                <-- per-provider EMA feedback collector
+│   │   ├── weight_tuner.py            <-- online weight tuner
+│   │   ├── queue.py                   <-- priority queue + load shedding
+│   │   ├── brownout.py                <-- graceful-degradation manager
+│   │   ├── provider_clients.py        <-- mock / Groq / Gemini adapters
+│   │   ├── provider_daily_quota.py    <-- opt-in per-provider UTC daily caps
+│   │   └── user_feedback_store.py     <-- SQLite-backed user feedback + analysis
 │   ├── rate_limiter/
-│   │   ├── main.py                 <-- Rate limiter service (port 8002)
-│   │   └── token_bucket.py         <-- Token bucket + replication log
+│   │   ├── main.py                    <-- 3-replica HTTP service (port 8002/8012/8022)
+│   │   ├── token_bucket.py            <-- TokenBucket + replication log
+│   │   └── election.py                <-- bully-style leader election
 │   ├── cost_tracker/
-│   │   ├── main.py                 <-- Cost tracker service (port 8003)
-│   │   └── accounting.py           <-- Per-tenant rollups + budget alerts
+│   │   ├── main.py                    <-- port 8003
+│   │   └── accounting.py              <-- tenant/team/workflow rollups + budgets
 │   ├── health_monitor/
-│   │   ├── main.py                 <-- Health monitor service (port 8004)
-│   │   └── circuit_breaker.py      <-- 3-state circuit breaker
-│   └── mock_provider/main.py       <-- Simulated upstream LLM (ports 9001-9003)
-├── tests/
-│   ├── test_token_bucket.py        <-- 7 unit tests
-│   ├── test_circuit_breaker.py     <-- 6 unit tests
-│   ├── test_intent.py              <-- 7 unit tests
-│   ├── test_policy.py              <-- 7 unit tests
-│   ├── test_registry.py            <-- 4 unit tests
-│   ├── test_accounting.py          <-- 4 unit tests
-│   └── test_integration.py         <-- 7 end-to-end tests (spawn real services)
-└── scripts/
-    ├── start_stack.py              <-- Launch the full system
-    └── demo.py                     <-- Demo client
+│   │   ├── main.py                    <-- port 8004
+│   │   └── circuit_breaker.py         <-- 3-state breaker
+│   ├── mock_provider/main.py          <-- ports 9001-9003; admin/force_* hooks
+│   └── eval_harness/                  <-- workload generator + replay runner
+├── frontend/
+│   ├── index.html                     <-- live dashboard (chat, health, traces, …)
+│   └── demo/
+├── scripts/
+│   ├── start_stack.py                 <-- launch the full local stack
+│   ├── start_stack_cloud.py           <-- Render / Railway / Fly.io launcher
+│   ├── demo.py                        <-- end-to-end CLI demo
+│   ├── demo_failure_recovery.py       <-- breaker close→open→half_open→close walk
+│   ├── replay_eval.py                 <-- scenario × policy replay harness
+│   ├── generate_workload.py           <-- emit a JSONL workload deterministically
+│   ├── run_all.py                     <-- single-process variant (no mock subprocs)
+│   └── apply_model_logging_patch.py
+├── tests/                             <-- 265 tests (252 unit + 13 integration)
+└── artifacts/                         <-- runtime SQLite + replay artifacts
 ```
 
 ## API surface
 
+Below is the trimmed list — every service also exposes `GET /health` (liveness), `GET /stats` (per-replica counters), and `POST /reset` (clear in-memory state for test isolation).
+
 ### Gateway (`:8000`) — the only service clients should talk to
 
-| Method | Path                  | Description                                  |
-|--------|-----------------------|----------------------------------------------|
-| POST   | `/v1/complete`        | Submit an LLM completion (X-API-Key header)  |
-| GET    | `/v1/cost/summary`    | Per-tenant cost rollup                       |
-| GET    | `/v1/system/health`   | Aggregate provider health snapshot           |
-| GET    | `/health`             | Liveness                                     |
+| Method | Path                        | Description                                  |
+|--------|-----------------------------|----------------------------------------------|
+| POST   | `/v1/complete`              | Submit an LLM completion (X-API-Key header)  |
+| GET    | `/v1/cost/summary`          | Per-tenant cost rollup                       |
+| GET    | `/v1/system/health`         | Aggregate provider health snapshot           |
+| POST   | `/v1/feedback`              | Submit a thumbs-up/down on a completion      |
+| GET    | `/v1/feedback/recent`       | Recent feedback rows for the tenant          |
+| GET    | `/v1/feedback/summary`      | Tenant feedback aggregate                    |
+| POST   | `/v1/feedback/analyze`      | LLM-assisted analysis of recent feedback     |
 
 ### Router (`:8001`)
 
-| Method | Path                  | Description                                                 |
-|--------|-----------------------|-------------------------------------------------------------|
-| POST   | `/complete`           | Internal: full routing + fallback execution                 |
-| POST   | `/decide`             | Internal: returns the routing decision without executing it |
-| GET    | `/providers`          | List registered providers                                   |
-| POST   | `/providers`          | Register a provider                                         |
-| DELETE | `/providers/{name}`   | Deregister a provider                                       |
+| Method | Path                          | Description                                                 |
+|--------|-------------------------------|-------------------------------------------------------------|
+| POST   | `/complete`                   | Internal: full routing + fallback execution                 |
+| POST   | `/decide`                     | Introspection: returns the routing decision without executing |
+| GET    | `/providers`                  | Currently routable providers (active leases only)           |
+| POST   | `/providers`                  | Bootstrap-style provider registration                       |
+| POST   | `/providers/register`         | Lease-based dynamic registration                            |
+| POST   | `/providers/heartbeat`        | Refresh a provider's lease                                  |
+| GET    | `/providers/registry`         | Full registry incl. stale entries (debug/observability)     |
+| DELETE | `/providers/{name}`           | Deregister a provider                                       |
+| GET    | `/feedback`                   | Per-provider EMA metrics (latency, success, anomaly, quality) |
+| GET    | `/queue/stats`                | Priority queue depth, shed count, timeouts                  |
+| GET    | `/brownout`                   | Global brownout state                                       |
+| GET    | `/brownout/{tenant_id}`       | Per-tenant brownout state                                   |
+| GET    | `/brownout/metrics`           | Global + per-tenant brownout metrics                        |
+| GET    | `/traces`                     | Last 50 completed request traces (ring buffer)              |
+| GET    | `/weights`                    | Current per-intent weights + tuner sample counts            |
+| POST   | `/weights/rebalance/{intent}` | Manually trigger a tuner rebalance                          |
+| GET    | `/routing/mode`               | Active routing policy                                       |
+| POST   | `/routing/mode`               | Switch routing policy (`intelliroute`, `round_robin`, …)    |
 
-### Rate Limiter (`:8002`)
+### Rate Limiter (`:8002` / `:8012` / `:8022`)
 
-| Method | Path        | Description                                                    |
-|--------|-------------|----------------------------------------------------------------|
-| POST   | `/check`    | Try to consume tokens for `(tenant, provider)`                |
-| POST   | `/config`   | Update bucket capacity/refill for a key                        |
-| GET    | `/leader`   | Current leader replica id                                      |
-| GET    | `/log`      | Replication log (for follower replay)                          |
+| Method | Path                                | Description                                                |
+|--------|-------------------------------------|------------------------------------------------------------|
+| POST   | `/check`                            | Try to consume tokens for `(tenant, provider)`             |
+| POST   | `/config` / `/config/tenant` / `/config/provider` / `/config/tenant-provider` | Update bucket capacity & refill at any granularity |
+| GET    | `/config/resolve/{tenant}/{provider}` | Show which bucket config a key resolves to + source level |
+| GET    | `/leader`                           | Current leader (from store)                                |
+| GET    | `/election/status`                  | This replica's election state                              |
+| POST   | `/election/{challenge,victory,heartbeat}` | Bully-protocol message handlers                       |
+| GET    | `/log` / `/log/since/{offset}`      | Replication log (full / incremental for follower replay)   |
 
 ### Cost Tracker (`:8003`)
 
-| Method | Path                   | Description                                  |
-|--------|------------------------|----------------------------------------------|
-| POST   | `/events`              | Publish a cost event                         |
-| GET    | `/summary/{tenant_id}` | Per-tenant rollup                            |
-| POST   | `/budget`              | Set a budget for a tenant                    |
-| GET    | `/alerts`              | List budget alerts                           |
+| Method | Path                            | Description                                                  |
+|--------|---------------------------------|--------------------------------------------------------------|
+| POST   | `/events`                       | Publish a cost event (fire-and-forget from the router)       |
+| GET    | `/summary/{tenant_id}`          | Per-tenant rollup                                            |
+| GET    | `/summary/team/{team_id}` / `/summary/workflow/{workflow_id}` | Team / workflow rollups          |
+| POST   | `/budget` / `/budget/team` / `/budget/workflow` | Set tenant / team / workflow budgets         |
+| POST   | `/budget/team/premium-cap`      | Cap a team's spend on premium-tier providers                 |
+| GET    | `/budget/{tenant_id}/headroom`  | Remaining budget                                             |
+| GET    | `/budget/{tenant_id}/check?projected_cost_usd=…` | Pre-call budget check                       |
+| GET    | `/alerts`                       | Budget-exceeded alerts                                       |
+| GET    | `/history/{tenant_id}`          | Paginated raw cost-event history                             |
 
 ### Health Monitor (`:8004`)
 
 | Method | Path                  | Description                                  |
 |--------|-----------------------|----------------------------------------------|
-| POST   | `/register`           | Register a provider URL for health polling   |
-| POST   | `/report/{provider}`  | Report success/failure to update breaker     |
-| GET    | `/snapshot`           | All breaker states                           |
+| POST   | `/register`           | Register a provider URL for periodic polling |
+| POST   | `/report/{provider}`  | Router pushes success/failure outcomes       |
+| GET    | `/snapshot`           | All breaker states (also advances OPEN→HALF_OPEN cooldowns) |
+| GET    | `/snapshot/{provider}`| Per-provider breaker state                   |
 
-### Mock Providers (`:9001-9003`)
+### Mock Providers (`:9001` / `:9002` / `:9003`)
 
-| Method | Path                   | Description                                  |
-|--------|------------------------|----------------------------------------------|
-| POST   | `/v1/chat`             | Simulated LLM completion                     |
-| POST   | `/admin/force_fail`    | Test hook to flip the provider into failing mode |
-| GET    | `/health`              | Liveness                                     |
+| Method | Path                       | Description                                            |
+|--------|----------------------------|--------------------------------------------------------|
+| POST   | `/v1/chat`                 | Simulated LLM completion                               |
+| POST   | `/admin/force_fail`        | Return HTTP 503 on every request                       |
+| POST   | `/admin/force_timeout`     | Hang every request (exercises router timeout handling) |
+| POST   | `/admin/force_rate_limit`  | Return HTTP 429 with `Retry-After`                     |
+| POST   | `/admin/force_malformed`   | Return HTTP 200 with broken JSON                       |
+| POST   | `/admin/reset`             | Clear all fault-injection flags                        |
+| GET    | `/admin/state`             | Inspect current fault flags                            |
 
 ## Configuration
 
-All services read configuration from environment variables. Defaults are
-defined in `intelliroute/common/config.py`. The most important variables:
+Every service reads its configuration from environment variables; defaults live in [`intelliroute/common/config.py`](intelliroute/common/config.py). The most useful ones:
 
-| Variable                              | Default          | Purpose                          |
-|---------------------------------------|------------------|----------------------------------|
-| `INTELLIROUTE_HOST`                   | `127.0.0.1`      | Bind host for every service      |
-| `INTELLIROUTE_GATEWAY_PORT`           | `8000`           |                                  |
-| `INTELLIROUTE_ROUTER_PORT`            | `8001`           |                                  |
-| `INTELLIROUTE_RATE_LIMITER_PORT`      | `8002`           |                                  |
-| `INTELLIROUTE_COST_TRACKER_PORT`      | `8003`           |                                  |
-| `INTELLIROUTE_HEALTH_MONITOR_PORT`    | `8004`           |                                  |
-| `INTELLIROUTE_MOCK_FAST_PORT`         | `9001`           | mock-fast provider               |
-| `INTELLIROUTE_MOCK_SMART_PORT`        | `9002`           | mock-smart provider              |
-| `INTELLIROUTE_MOCK_CHEAP_PORT`        | `9003`           | mock-cheap provider              |
-| `INTELLIROUTE_DEMO_KEY`               | `demo-key-123`   | Demo API key for `demo-tenant`   |
-| `INTELLIROUTE_ROUTER_URL`             | *(derived)*      | Optional full router base URL for mock self-registration; defaults to `http://INTELLIROUTE_HOST:INTELLIROUTE_ROUTER_PORT` |
-| `INTELLIROUTE_MOCK_REGISTRATION`      | `hybrid`         | How mocks join the registry: `legacy` (router bootstrap only), `hybrid` (bootstrap + mocks register and heartbeat), `dynamic` (bootstrap skips demo mocks; mocks must register) |
-| `INTELLIROUTE_MOCK_PUBLIC_PORT`       | *(unset)*        | Each mock process must set this to its HTTP port for `hybrid` / `dynamic` so the router learns the live URL |
-| `INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS` | `30`        | Lease length for dynamically registered providers; stale without heartbeats |
-| `INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS` | `8` | How often mocks call `POST /providers/heartbeat` |
-| `INTELLIROUTE_PROVIDER_MODE` | `auto` | Bootstrap mode: `auto` (keys → externals only, else mocks), `mock_only`, `external_only`, `hybrid`. See `intelliroute/common/provider_mode.py`. |
-| `INTELLIROUTE_USE_MOCKS` | `0` | If `1`, behaves like **`mock_only`** regardless of `INTELLIROUTE_PROVIDER_MODE` (mocks only at bootstrap). |
-| `GEMINI_API_KEY` / `GROQ_API_KEY` | *(empty)* | Only matter when the router **registers** Groq/Gemini (not in `mock_only` / `INTELLIROUTE_USE_MOCKS=1`). |
-| `INTELLIROUTE_USER_FEEDBACK_DB_PATH` | `artifacts/user_feedback.sqlite3` | SQLite file for persisted user feedback. |
-| `INTELLIROUTE_FEEDBACK_PROMPT_PREVIEW_CHARS` | `200` | Max stored characters of the last user message (per completion). |
-| `INTELLIROUTE_FEEDBACK_RESPONSE_PREVIEW_CHARS` | `300` | Max stored characters of the model reply preview. |
-| `INTELLIROUTE_FEEDBACK_ANALYSIS_DEFAULT_ROWS` | `100` | Default sample size for `POST /feedback/analyze` when `limit` is omitted. |
-| `INTELLIROUTE_FEEDBACK_ANALYSIS_MAX_ROWS` | `500` | Hard cap for analysis sample rows (larger requests are clamped). |
-| `INTELLIROUTE_FEEDBACK_ANALYSIS_SAMPLE_POOL_MAX` | `20000` | Max recent rows read from SQLite when building the stratified analysis sample. |
+| Variable                                              | Default                              | Purpose                                 |
+|-------------------------------------------------------|--------------------------------------|-----------------------------------------|
+| `INTELLIROUTE_HOST`                                   | `127.0.0.1`                          | Bind host                               |
+| `INTELLIROUTE_GATEWAY_PORT`                           | `8000`                               | Gateway port                            |
+| `INTELLIROUTE_ROUTER_PORT`                            | `8001`                               | Router port                             |
+| `INTELLIROUTE_RATE_LIMITER_PORT[_1,_2]`               | `8002`, `8012`, `8022`               | Three rate-limiter replicas             |
+| `INTELLIROUTE_COST_TRACKER_PORT`                      | `8003`                               |                                         |
+| `INTELLIROUTE_HEALTH_MONITOR_PORT`                    | `8004`                               |                                         |
+| `INTELLIROUTE_MOCK_FAST_PORT` / `_SMART_PORT` / `_CHEAP_PORT` | `9001` / `9002` / `9003`     | Mock provider ports                     |
+| `INTELLIROUTE_FRONTEND_PORT`                          | `3000`                               | Static dashboard                        |
+| `INTELLIROUTE_DEMO_KEY`                               | `demo-key-123`                       | Demo API key → `demo-tenant`            |
+| `INTELLIROUTE_PROVIDER_MODE`                          | `auto`                               | `auto` / `mock_only` / `external_only` / `hybrid` |
+| `INTELLIROUTE_USE_MOCKS`                              | `0`                                  | If `1`, force mock-only routing         |
+| `GROQ_API_KEY` / `GEMINI_API_KEY`                     | *(empty)*                            | Live provider keys (in `.env` or shell) |
+| `INTELLIROUTE_GROQ_MODEL` / `INTELLIROUTE_GEMINI_MODEL` | `llama-3.3-70b-versatile` / `gemini-2.5-flash` | Per-provider model id     |
+| `INTELLIROUTE_PROVIDER_TIMEOUT_S`                     | `30`                                 | Per-call upstream timeout (seconds)     |
+| `INTELLIROUTE_MOCK_REGISTRATION`                      | `hybrid`                             | `legacy` / `hybrid` / `dynamic` — controls mock self-registration |
+| `INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS`             | `30`                                 | Dynamic-registration lease TTL          |
+| `INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS`    | `8`                                  | Mock heartbeat interval                 |
+| `INTELLIROUTE_ROUTING_MODE`                           | `intelliroute`                       | Initial routing mode                    |
+| `INTELLIROUTE_ENABLE_PROVIDER_DAILY_QUOTAS`           | `0`                                  | Turn on per-provider UTC daily caps     |
+| `RATE_LIMITER_REPLICA_ID` / `RATE_LIMITER_PEERS`      | `rl-0` / 3-peer cluster              | Per-replica election identity           |
+| `RATE_LIMITER_STRONG_CONSISTENCY`                     | `0`                                  | If `1`, followers fail closed when forwarding fails |
+| `INTELLIROUTE_USER_FEEDBACK_DB_PATH`                  | `artifacts/user_feedback.sqlite3`    | SQLite path for user feedback           |
 
-`scripts/start_stack.py` sets the mock public ports and the variables above so the demo stack stays routable under the default **hybrid** mode.
+`scripts/start_stack.py` sets the most important variables automatically — including the per-mock public ports needed for hybrid registration and the 3-peer cluster topology for the rate limiter.
 
-### Safe local testing (no Gemini / Groq quota)
+### Safe local testing (no Gemini / Groq quota burned)
 
-To run the stack **without registering or calling** Gemini or Groq—even if keys exist in `.env`—use:
+To run the stack **without registering or calling** Gemini or Groq even if keys exist in `.env`:
 
 ```bash
-INTELLIROUTE_PROVIDER_MODE=mock_only
-INTELLIROUTE_USE_MOCKS=1
+INTELLIROUTE_USE_MOCKS=1 PYTHONPATH=. python3 scripts/start_stack.py
 ```
 
-Either variable alone is enough for mocks-only routing in normal setups (`USE_MOCKS=1` already forces effective `mock_only`). Using **both** makes intent obvious for teammates.
-
-Behavior (verified in `tests/test_provider_mode.py` and router bootstrap in `intelliroute/router/main.py`):
-
-- Only mock providers are registered from bootstrap (Groq/Gemini are not added to the registry).
-- `scripts/start_stack.py` still launches the three mock Uvicorn processes (`should_skip_mock_uvicorn_subprocesses` is false for `mock_only`).
-- **Feedback AI analysis** (`POST /feedback/analyze`) calls `_execute_completion` like any other completion; it does **not** bypass the router. With mocks only registered, analysis traffic goes to mock provider URLs only.
-
-**How to verify:** After `start_stack.py`, call `GET http://127.0.0.1:8001/providers` (or use the admin UI provider list). You should see `mock-fast`, `mock-smart`, `mock-cheap` (and any dynamically registered mocks), and **no** `groq` / `gemini`. Run completions and feedback analysis; network traffic should stay on localhost mock ports.
-
-A template without secrets is in **`.env.example`**.
+`INTELLIROUTE_USE_MOCKS=1` forces effective `mock_only` mode (`tests/test_provider_mode.py` covers the matrix). With it set, only `mock-fast`, `mock-smart`, and `mock-cheap` appear in `GET http://127.0.0.1:8001/providers`; no traffic ever leaves localhost.
 
 ---
 
 ## Team contributions
 
-Work on IntelliRoute was divided across four subsystem owners. Each
-teammate is the primary author of their modules and their corresponding
-tests; everyone reviewed each other's pull requests and jointly wrote
-the final report.
+Work was divided across four subsystem owners. Everyone reviewed each other's pull requests.
 
-### Anukrithi Myadala — Gateway, shared infrastructure, and cross-cutting concerns
+### Anukrithi Myadala — Gateway, shared infrastructure, and the dashboard frontend
 
-- Designed the shared Pydantic data model in `intelliroute/common/models.py`
-  so every service speaks the same wire format.
-- Implemented `intelliroute/common/config.py` (environment-variable
-  driven settings, port allocation, service URLs).
-- Built the structured JSON logger in `intelliroute/common/logging.py`
-  used by every service.
-- Wrote the API Gateway (`intelliroute/gateway/main.py`): API-key
-  authentication, tenant identity rewriting, `X-Request-Id` trace
-  propagation, cost-summary and system-health passthroughs.
-- Wrote `scripts/start_stack.py` and `scripts/demo.py` and authored
-  the README "Quick start for teammates" walkthrough.
+- Designed the shared Pydantic data model in [`intelliroute/common/models.py`](intelliroute/common/models.py) so every service speaks the same wire format.
+- Implemented [`intelliroute/common/config.py`](intelliroute/common/config.py) (env-driven settings) and [`intelliroute/common/env.py`](intelliroute/common/env.py) (minimal `.env` loader).
+- Built the structured JSON logger in [`intelliroute/common/logging.py`](intelliroute/common/logging.py) used by every service.
+- Wrote the API gateway ([`intelliroute/gateway/main.py`](intelliroute/gateway/main.py)): API-key auth, tenant identity rewriting, `X-Request-Id` trace propagation, cost-summary / system-health / feedback passthroughs, CORS for the dashboard.
+- Owned the live dashboard ([`frontend/index.html`](frontend/index.html)): chat panel, provider health, routing visualization, cost rollups, leader-election state, queue/brownout, and the user-feedback / AI-analysis flow.
+- Wrote [`scripts/start_stack.py`](scripts/start_stack.py) and [`scripts/demo.py`](scripts/demo.py) and authored this README's quick-start walkthrough.
 
-### Larry Nguyen — Router service, routing policy, and intent classification
+### Larry Nguyen — Router, routing policy, intent classification, and online weight tuning
 
-- Implemented the intent classifier in `intelliroute/router/intent.py`
-  (hint-first, then code/batch/reasoning/interactive heuristics).
-- Built the multi-objective routing policy in
-  `intelliroute/router/policy.py`: normalised sub-scores for latency,
-  cost, capability, and success rate, and intent-specific weight
-  vectors.
-- Implemented the provider registry in
-  `intelliroute/router/registry.py` (the in-memory analogue of
-  Consul/etcd for service discovery).
-- Wrote the router service itself (`intelliroute/router/main.py`):
-  bootstrap of the three mock providers, fallback loop that skips
-  rate-limited or unhealthy providers, async reporting to the health
-  monitor, and async cost-event publishing.
-- Authored `tests/test_intent.py`, `tests/test_policy.py`, and
-  `tests/test_registry.py` (18 unit tests).
+- Implemented the intent classifier in [`intelliroute/router/intent.py`](intelliroute/router/intent.py).
+- Built the multi-objective routing policy in [`intelliroute/router/policy.py`](intelliroute/router/policy.py) and the declarative policy engine in [`intelliroute/router/policy_engine/`](intelliroute/router/policy_engine/).
+- Implemented the provider registry in [`intelliroute/router/registry.py`](intelliroute/router/registry.py) (bootstrap + dynamic leases).
+- Wrote the router service itself ([`intelliroute/router/main.py`](intelliroute/router/main.py)): bootstrap, fallback loop, async health & cost reporting, request queue + worker model, brownout integration, retry / SLA back-off.
+- Added the online [`WeightTuner`](intelliroute/router/weight_tuner.py) and [`provider_clients.py`](intelliroute/router/provider_clients.py) (mock / Groq / Gemini adapters).
+- Authored [`tests/test_intent.py`](tests/test_intent.py), [`tests/test_policy.py`](tests/test_policy.py), [`tests/test_policy_engine.py`](tests/test_policy_engine.py), [`tests/test_registry.py`](tests/test_registry.py), [`tests/test_weight_tuner.py`](tests/test_weight_tuner.py), [`tests/test_router_routing_mode.py`](tests/test_router_routing_mode.py).
 
-### James Pham — Rate limiter, health monitor, leader/replication, circuit breakers
+### James Pham — Rate limiter cluster, leader election, circuit breakers, and the eval harness
 
-- Implemented the core `TokenBucket` and `RateLimiterStore`
-  (`intelliroute/rate_limiter/token_bucket.py`), including the
-  authoritative leader id and replication log used by follower
-  replicas.
-- Wrote the rate limiter service (`intelliroute/rate_limiter/main.py`):
-  `/check`, `/config`, `/leader`, `/log` endpoints.
-- Implemented the three-state circuit breaker in
-  `intelliroute/health_monitor/circuit_breaker.py`
-  (closed → open → half_open transitions with sliding error window).
-- Wrote the health monitor service
-  (`intelliroute/health_monitor/main.py`): `/report`, `/snapshot`,
-  periodic background liveness polling of registered providers.
-- Authored `tests/test_token_bucket.py` and
-  `tests/test_circuit_breaker.py` (13 unit tests).
+- Implemented the core `TokenBucket` and `RateLimiterStore` in [`intelliroute/rate_limiter/token_bucket.py`](intelliroute/rate_limiter/token_bucket.py) including the replication log used by follower replicas.
+- Wrote the bully-style leader election in [`intelliroute/rate_limiter/election.py`](intelliroute/rate_limiter/election.py) and the rate-limiter HTTP service in [`intelliroute/rate_limiter/main.py`](intelliroute/rate_limiter/main.py): `/check` forwarding, `/log/since/{offset}` incremental sync, `/election/*` handlers, opt-in fail-closed mode.
+- Implemented the three-state circuit breaker in [`intelliroute/health_monitor/circuit_breaker.py`](intelliroute/health_monitor/circuit_breaker.py) and the health monitor service in [`intelliroute/health_monitor/main.py`](intelliroute/health_monitor/main.py) (snapshot-driven cooldown advancement, periodic liveness polling).
+- Built the replay evaluation harness ([`intelliroute/eval_harness/`](intelliroute/eval_harness/), [`scripts/replay_eval.py`](scripts/replay_eval.py), [`scripts/generate_workload.py`](scripts/generate_workload.py)) and the cloud launcher ([`scripts/start_stack_cloud.py`](scripts/start_stack_cloud.py)).
+- Authored [`tests/test_token_bucket.py`](tests/test_token_bucket.py), [`tests/test_circuit_breaker.py`](tests/test_circuit_breaker.py), [`tests/test_election.py`](tests/test_election.py), [`tests/test_eval_*.py`](tests/), [`tests/test_brownout.py`](tests/test_brownout.py).
 
-### Surbhi Singh — Cost tracker, mock providers, observability, and integration testing
+### Surbhi Singh — Cost tracker, mock providers, observability, end-to-end testing
 
-- Implemented the `CostAccountant` in
-  `intelliroute/cost_tracker/accounting.py` (per-tenant rollups,
-  per-provider breakdown, budget-exceeded alerting).
-- Wrote the cost tracker service (`intelliroute/cost_tracker/main.py`):
-  `/events`, `/summary/{tenant_id}`, `/budget`, `/alerts`.
-- Built the parametrised mock LLM provider
-  (`intelliroute/mock_provider/main.py`) with configurable latency,
-  jitter, failure rate, and cost per 1K tokens, plus the
-  `/admin/force_fail` test hook.
-- Authored `tests/test_accounting.py` (4 unit tests).
-- Authored `tests/test_integration.py` — the 7 end-to-end tests that
-  spawn the full 8-process stack on ephemeral ports and verify
-  routing, failover, rate limiting, cost tracking, and authentication
-  over real HTTP.
-- Led the failure-mode demo scripts documented in "Quick start → Step 5".
+- Implemented [`CostAccountant`](intelliroute/cost_tracker/accounting.py): tenant / team / workflow rollups, headroom, premium caps, budget alerts.
+- Wrote the cost tracker service ([`intelliroute/cost_tracker/main.py`](intelliroute/cost_tracker/main.py)): `/events`, `/summary/*`, `/budget/*`, `/alerts`, `/history`.
+- Built the parametrised mock LLM provider ([`intelliroute/mock_provider/main.py`](intelliroute/mock_provider/main.py)) with configurable latency, jitter, failure rate, cost per 1K tokens, and the four `/admin/force_*` fault-injection hooks.
+- Designed the user-feedback subsystem: [`intelliroute/router/user_feedback_store.py`](intelliroute/router/user_feedback_store.py) (SQLite + sample-stratified analysis cache) and the corresponding gateway / router endpoints.
+- Authored [`tests/test_accounting.py`](tests/test_accounting.py), [`tests/test_models_budget_scopes.py`](tests/test_models_budget_scopes.py), [`tests/test_user_feedback_*.py`](tests/), [`tests/test_feedback*.py`](tests/), [`tests/test_router_user_feedback_api.py`](tests/test_router_user_feedback_api.py), [`tests/test_provider_*.py`](tests/), and the 13-test [`tests/test_integration.py`](tests/test_integration.py) end-to-end suite that spawns the full stack on ephemeral ports.
+- Owned the failure-mode demo scripts ([`scripts/demo_failure_recovery.py`](scripts/demo_failure_recovery.py)) and the live-trace ring buffer + `/traces` endpoint surfaced in the dashboard.
 
-### Joint contributions (all four teammates)
+### Joint contributions (all four)
 
-- Architecture design and weekly integration reviews.
-- The project report (`REPORT.docx`) and the list of bugs caught during
-  development (see the "Bug log" section of the report).
-- Final demo preparation and presentation.
+- Architecture design, weekly integration reviews, code reviews on every PR.
+- Final demo preparation and the in-class presentation.
 
 ---
 
@@ -604,18 +531,9 @@ the final report.
 
 For the scope of a one-semester project we deliberately stop short of:
 
-- **A real Raft implementation.** The rate limiter exposes a leader id
-  and replication log, but only one replica runs in the demo. Adding a
-  follower that tails the log is straightforward and is called out as
-  the natural extension.
-- **A persistent store.** All state is in-memory; restarting a service
-  resets it. Swapping in Redis or Postgres is a single-file change.
-- **A learned intent classifier.** The classifier is a deterministic
-  set of heuristics so that it can be unit tested without an external
-  model.
-- **Real LLM providers.** The mock providers simulate latency, cost,
-  and failure modes parameterised by env vars; pointing the registry
-  at a real provider is just a `ProviderInfo.url` change.
+- **Production-grade Raft.** The rate limiter implements a working bully-style election, replication log, and follower forwarding — sufficient to demonstrate the consistency / availability tradeoff. A formally verified Raft implementation is the natural extension.
+- **Persistent state.** All in-memory state (rate-limit buckets, breakers, registry, queue) resets on restart. Only user-feedback rows are persisted (SQLite at `artifacts/user_feedback.sqlite3`). Swapping in Redis or Postgres for the rest is a single-file change per subsystem.
+- **A learned intent classifier.** The classifier is deterministic heuristics so it can be unit tested without an external model.
+- **Production LLM adapters at scale.** We ship working Groq + Gemini adapters in [`provider_clients.py`](intelliroute/router/provider_clients.py), but for the demo we default to mock providers — they let us simulate latency, cost, and four distinct failure modes without burning real-provider quota.
 
-These scoping decisions keep the focus of the project where the course
-expects it: on distributed-systems design and engineering tradeoffs.
+These scoping decisions keep the focus on distributed-systems design and engineering tradeoffs, which is what the course is grading.
