@@ -3619,6 +3619,8 @@
 
         .admin-ov-table-wrap {
             overflow-x: auto;
+            max-height: min(340px, 55vh);
+            overflow-y: auto;
         }
 
         .admin-ov-table {
@@ -5329,6 +5331,7 @@
                             </div>
                             <div class="admin-card admin-card--providers">
                                 <h3>Provider snapshot</h3>
+                                <p class="admin-card-hint" id="ovProviderSnapshotHint">—</p>
                                 <div class="admin-ov-table-wrap">
                                     <table class="admin-ov-table">
                                         <thead>
@@ -5844,6 +5847,7 @@
             lastRegistryJson: null,
             lastBrownoutJson: null,
             lastQueueJson: null,
+            lastDailyQuotasJson: null,
             lastHealthSnapshot: null,
             lastAdminTrace: null,
             selectedProviderName: null,
@@ -7331,7 +7335,16 @@
                     ? `Brownout: ${bo.reason} (q=${bo.queue_depth}, p95=${Math.round(bo.p95_latency_ms || 0)}ms)`
                     : '';
                 const modelLine = data.model ? `Model: ${data.model}` : '';
-                addEvent('routing', `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${modelLine ? ' | ' + modelLine : ''}${policyLine ? ' | ' + policyLine : ''}${brownoutLine ? ' | ' + brownoutLine : ''}`);
+                addEvent(
+                    'routing',
+                    `Route to ${data.provider} (${data.latency_ms}ms, $${(data.estimated_cost_usd || 0).toFixed(4)})${modelLine ? ' | ' + modelLine : ''}${policyLine ? ' | ' + policyLine : ''}${brownoutLine ? ' | ' + brownoutLine : ''}`,
+                    {
+                        provider: data.provider,
+                        latency_ms: data.latency_ms,
+                        estimated_cost_usd: data.estimated_cost_usd,
+                        ok: true
+                    }
+                );
                 highlightProvider(data.provider);
 
                 let decideJson = null;
@@ -7993,8 +8006,12 @@
             }).join('');
         }
 
-        function addEvent(type, message) {
-            state.recentAdminEvents.unshift({ type, message, at: Date.now() });
+        function addEvent(type, message, meta) {
+            const row = { type, message, at: Date.now() };
+            if (meta && typeof meta === 'object') {
+                Object.assign(row, meta);
+            }
+            state.recentAdminEvents.unshift(row);
             state.recentAdminEvents = state.recentAdminEvents.slice(0, 45);
             renderOverviewEventFeed();
 
@@ -8565,29 +8582,35 @@
             const reg = state.lastRegistryJson;
             const fb = state.lastFeedbackJson || {};
             const hs = state.lastHealthSnapshot || {};
+            const routeByCanon = aggregateRouteTelemetryByCanonical();
             const byProviderCost = (state.lastCostJson && state.lastCostJson.by_provider) || {};
             const staleSet = new Set(state.registryStaleNames || []);
             const names = new Set(state.providers || []);
             const regRows = (reg && reg.providers) || [];
             regRows.forEach((r) => {
-                if (r && r.name) names.add(r.name);
+                const id = registryRowCanonicalId(r);
+                if (id) names.add(id);
             });
 
             const rows = Array.from(names).map((name) => {
-                const rg = regRows.find((r) => r.name === name) || null;
-                const m = fb[name] || null;
-                const h = hs[name] || null;
-                const circuit = h ? (h.circuit_state || 'closed') : 'unknown';
+                const rg = regRows.find((r) => registryRowCanonicalId(r) === name) || null;
+                const merged = mergeFeedbackAndRouteForCanonical(name, fb, routeByCanon);
+                const mNorm = merged.normalized;
+                const rawH = pickRawMetricRecord(hs, name);
+                const hRec = rawH ? normalizeHealthRecord(rawH) : null;
+                const circuit = hRec ? hRec.circuit_state || 'closed' : 'unknown';
                 const routable = rg ? !!rg.routable : !staleSet.has(name);
                 const stale = staleSet.has(name);
-                const latencyEma = m && typeof m.latency_ema === 'number' ? m.latency_ema : null;
-                const avgLatency = h && typeof h.avg_latency_ms === 'number' ? h.avg_latency_ms : null;
-                const success = m && typeof m.success_rate_ema === 'number' ? m.success_rate_ema : null;
-                const quality = m && typeof m.quality_score === 'number' ? m.quality_score : null;
-                const anomaly = m && typeof m.anomaly_score === 'number' ? m.anomaly_score : null;
-                const sampleCount = m && typeof m.sample_count === 'number' ? m.sample_count : null;
-                const tokenEfficiency = m && typeof m.token_efficiency_ema === 'number' ? m.token_efficiency_ema : null;
-                const spend = typeof byProviderCost[name] === 'number' ? byProviderCost[name] : 0;
+                const latencyEma = merged.latency_ms != null ? merged.latency_ms : null;
+                const avgLatency = rawH && typeof rawH.avg_latency_ms === 'number' ? rawH.avg_latency_ms : null;
+                const success = merged.success_rate_ema != null ? merged.success_rate_ema : null;
+                const quality = mNorm && typeof mNorm.quality_score === 'number' ? mNorm.quality_score : null;
+                const anomaly = mNorm && typeof mNorm.anomaly_score === 'number' ? mNorm.anomaly_score : null;
+                const sampleCount = mNorm && typeof mNorm.sample_count === 'number' ? mNorm.sample_count : null;
+                const rawFb = pickRawMetricRecord(fb, name);
+                const tokenEfficiency =
+                    rawFb && typeof rawFb.token_efficiency_ema === 'number' ? rawFb.token_efficiency_ema : null;
+                const spend = Number(pickCostForProvider(byProviderCost, name)) || 0;
                 const pType = (rg && rg.provider_type) || 'mock';
                 const model = (rg && rg.model) || '—';
                 const tier = (rg && rg.model_tier) || pType || '—';
@@ -8848,6 +8871,8 @@
         }
 
         function refreshAdminOverviewPanels() {
+            const routeByCanon = aggregateRouteTelemetryByCanonical();
+
             const gChip = document.getElementById('ovChipGateway');
             const gText = document.getElementById('ovChipGatewayText');
             if (gText) {
@@ -8865,14 +8890,15 @@
             if (hText && state.lastHealthSnapshot) {
                 let open = 0;
                 let half = 0;
-                state.providers.forEach((p) => {
-                    const snap = state.lastHealthSnapshot[p];
+                getOverviewProviderNames().forEach((p) => {
+                    const snap = pickRawMetricRecord(state.lastHealthSnapshot, p);
                     if (!snap) return;
-                    const cs = snap.circuit_state || 'closed';
+                    const nr = normalizeHealthRecord(snap);
+                    const cs = (nr && nr.circuit_state) || snap.circuit_state || snap.circuitState || 'closed';
                     if (cs === 'open') open++;
                     if (cs === 'half_open') half++;
                 });
-                hText.textContent = open || half ? `${open} open · ${half} half-open` : 'All circuits closed';
+                hText.textContent = open || half ? `${open} open · ${half} half-open` : 'All circuits healthy (closed)';
                 if (hChip) {
                     if (open) hChip.classList.add('admin-status-chip--bad');
                     else if (half) hChip.classList.add('admin-status-chip--warn');
@@ -8883,7 +8909,7 @@
             }
 
             const lText = document.getElementById('ovChipLeaderText');
-            if (lText) lText.textContent = state.currentLeaderId || 'Unknown';
+            if (lText) lText.textContent = formatQuotaLeaderChip(state.lastDailyQuotasJson);
 
             const bText = document.getElementById('ovChipBrownoutText');
             const bChip = document.getElementById('ovChipBrownout');
@@ -8902,11 +8928,13 @@
 
             const dText = document.getElementById('ovChipDiscoveryText');
             const reg = state.lastRegistryJson;
-            if (dText && reg) {
+            if (dText && reg && reg.providers_total != null) {
                 const stale = (reg.stale_names || []).length;
                 dText.textContent = stale
                     ? `${reg.providers_active}/${reg.providers_total} routable · stale: ${(reg.stale_names || []).join(', ')}`
                     : `${reg.providers_active}/${reg.providers_total} routable`;
+            } else if (dText && (state.providers || []).length) {
+                dText.textContent = `${state.providers.length} known · registry snapshot unavailable`;
             } else if (dText) {
                 dText.textContent = '—';
             }
@@ -8928,26 +8956,32 @@
                 setTxt('ovKpiPremium', '—');
             }
 
-            if (fb) {
+            {
                 let latSum = 0;
+                let latN = 0;
                 let sucSum = 0;
-                let n = 0;
-                state.providers.forEach((p) => {
-                    const m = fb[p];
-                    if (!m) return;
-                    latSum += m.latency_ema || 0;
-                    sucSum += m.success_rate_ema || 0;
-                    n++;
+                let sucN = 0;
+                const fbSnapForMerge = fb || {};
+                getOverviewProviderNames().forEach((p) => {
+                    const merged = mergeFeedbackAndRouteForCanonical(p, fbSnapForMerge, routeByCanon);
+                    if (merged.latency_ms != null) {
+                        latSum += merged.latency_ms;
+                        latN++;
+                    }
+                    if (merged.success_rate_ema != null) {
+                        sucSum += merged.success_rate_ema;
+                        sucN++;
+                    }
                 });
-                setTxt('ovKpiLatency', n ? `${Math.round(latSum / n)}ms` : '—');
-                setTxt('ovKpiSuccess', n ? `${Math.round((sucSum / n) * 100)}%` : '—');
-            } else {
-                setTxt('ovKpiLatency', '—');
-                setTxt('ovKpiSuccess', '—');
+                setTxt('ovKpiLatency', latN ? `${Math.round(latSum / latN)}ms` : '—');
+                setTxt('ovKpiSuccess', sucN ? `${Math.round((sucSum / sucN) * 100)}%` : '—');
             }
 
-            if (reg) {
+            if (reg && reg.providers_total != null) {
                 setTxt('ovKpiProviders', `${reg.providers_active ?? '—'}/${reg.providers_total ?? '—'}`);
+            } else if ((state.providers || []).length) {
+                const n = state.providers.length;
+                setTxt('ovKpiProviders', `${n}/${n} · registry unavailable`);
             } else {
                 setTxt('ovKpiProviders', '—');
             }
@@ -8963,32 +8997,98 @@
                 mini.innerHTML = '<div>No cost data yet.</div>';
             }
 
+            const overviewProviderNames = getOverviewProviderNames();
+
+            const snapHint = document.getElementById('ovProviderSnapshotHint');
+            if (snapHint) {
+                const regSnap = state.lastRegistryJson;
+                const nn = overviewProviderNames.length;
+                const tot = regSnap && regSnap.providers_total != null ? Number(regSnap.providers_total) : null;
+                const act = regSnap && regSnap.providers_active != null ? regSnap.providers_active : null;
+                if (tot != null) {
+                    snapHint.textContent =
+                        nn === tot
+                            ? `All ${tot} registered${act != null ? ` · ${act}/${tot} routable` : ''} · scroll vertically if the list is tall`
+                            : `Showing ${nn} of ${tot} registered providers${act != null ? ` · ${act} routable` : ''} · if this persists, check gateway vs router registry payloads`;
+                } else {
+                    snapHint.textContent = `${nn} provider row(s); registry totals not loaded`;
+                }
+            }
+
             const tbody = document.getElementById('ovProviderTbody');
-            if (tbody && fb && state.lastHealthSnapshot) {
+            if (tbody) {
                 const staleSet = new Set(state.registryStaleNames || []);
-                tbody.innerHTML = state.providers.map((p) => {
-                    const m = fb[p];
-                    const h = state.lastHealthSnapshot[p];
-                    const cs = h ? (h.circuit_state || 'closed') : '—';
-                    const routable = staleSet.has(p) ? 'Stale' : 'Yes';
-                    const lat = m ? `${Math.round(m.latency_ema)}ms` : '—';
-                    const suc = m ? `${Math.round((m.success_rate_ema || 0) * 100)}%` : '—';
-                    const q = m && typeof m.quality_score === 'number' ? m.quality_score.toFixed(2) : '—';
-                    const an = m ? (m.anomaly_score != null ? m.anomaly_score.toFixed(2) : '—') : '—';
-                    const pillClass = cs === 'open' ? 'admin-ov-pill--bad' : cs === 'half_open' ? 'admin-ov-pill--warn' : 'admin-ov-pill--ok';
-                    const display = p.replace('mock-', '');
-                    return `<tr>
+                const regRows = (state.lastRegistryJson && state.lastRegistryJson.providers) || [];
+                const rowByName = {};
+                regRows.forEach((row) => {
+                    if (!row || typeof row !== 'object') return;
+                    const n = row.name != null ? String(row.name).trim() : '';
+                    const pid = row.provider_id != null ? String(row.provider_id).trim() : '';
+                    if (n) rowByName[n] = row;
+                    if (pid && rowByName[pid] == null) rowByName[pid] = row;
+                });
+                const names = overviewProviderNames;
+                const hs = state.lastHealthSnapshot || {};
+                const fbSnap = fb || {};
+                if (!names.length) {
+                    tbody.innerHTML = '<tr><td colspan="7">No providers in registry yet.</td></tr>';
+                } else {
+                    tbody.innerHTML = names
+                        .map((p) => {
+                            const reg = rowByName[p];
+                            const rawH = pickRawMetricRecord(hs, p);
+                            const h = rawH ? normalizeHealthRecord(rawH) : null;
+                            let cs = h ? h.circuit_state : null;
+                            if (!cs && rawH) cs = rawH.circuit_state || rawH.circuitState || rawH.circuit || 'closed';
+                            if (!cs) cs = '—';
+                            let routable = '—';
+                            if (reg && typeof reg.routable === 'boolean') {
+                                routable = reg.routable ? 'Yes' : 'No';
+                            } else if (staleSet.has(p)) {
+                                routable = 'Stale';
+                            } else if (reg) {
+                                routable = 'Yes';
+                            }
+                            const merged = mergeFeedbackAndRouteForCanonical(p, fbSnap, routeByCanon);
+                            const m = merged.normalized;
+                            const lat =
+                                merged.latency_ms != null ? `${Math.round(merged.latency_ms)}ms` : 'No metrics yet';
+                            const suc =
+                                merged.success_rate_ema != null
+                                    ? `${Math.round(merged.success_rate_ema * 100)}%`
+                                    : 'No metrics yet';
+                            const q =
+                                m && m.quality_score != null ? m.quality_score.toFixed(2) : 'No metrics yet';
+                            let an = '—';
+                            if (m && m.anomaly_score != null) an = m.anomaly_score.toFixed(2);
+                            const degraded =
+                                (h && h.healthy === false) ||
+                                cs === 'open' ||
+                                (reg && reg.routable === false);
+                            if (degraded && an === '—') an = 'degraded';
+                            else if (degraded && an !== '—') an = `${an} · risk`;
+                            const pillClass =
+                                cs === 'open'
+                                    ? 'admin-ov-pill--bad'
+                                    : cs === 'half_open'
+                                      ? 'admin-ov-pill--warn'
+                                      : cs === '—'
+                                        ? ''
+                                        : 'admin-ov-pill--ok';
+                            const display = String(p).replace(/^mock-/, '');
+                            const pillInner = cs === '—' ? '—' : `<span class="admin-ov-pill ${pillClass}">${escapeHtml(String(cs))}</span>`;
+                            return `<tr>
                         <td>${escapeHtml(display)}</td>
-                        <td><span class="admin-ov-pill ${pillClass}">${escapeHtml(cs)}</span></td>
+                        <td>${pillInner}</td>
                         <td>${escapeHtml(routable)}</td>
                         <td>${escapeHtml(lat)}</td>
                         <td>${escapeHtml(suc)}</td>
                         <td>${escapeHtml(q)}</td>
                         <td>${escapeHtml(an)}</td>
                     </tr>`;
-                }).join('');
-            } else if (tbody) {
-                tbody.innerHTML = '<tr><td colspan="7">Waiting for metrics…</td></tr>';
+                        })
+                        .join('');
+                }
             }
 
             const qj = state.lastQueueJson;
@@ -9381,6 +9481,282 @@
             if (health) health.classList.add('active');
         }
 
+        /** Normalize gateway/health-monitor JSON to a provider → record map. */
+        function extractProviderHealthMap(body) {
+            if (!body || typeof body !== 'object') return {};
+            if (body.providers && typeof body.providers === 'object' && !Array.isArray(body.providers)) {
+                return body.providers;
+            }
+            const skip = new Set(['status', 'service', 'detail', 'ok', 'message', 'version']);
+            const out = {};
+            for (const [k, v] of Object.entries(body)) {
+                if (skip.has(k)) continue;
+                if (v && typeof v === 'object' && !Array.isArray(v)) {
+                    if (
+                        'circuit_state' in v ||
+                        'circuitState' in v ||
+                        'circuit' in v ||
+                        'healthy' in v ||
+                        ('name' in v && ('error_rate' in v || 'consecutive_failures' in v))
+                    ) {
+                        out[k] = v;
+                    }
+                }
+            }
+            return out;
+        }
+
+        function normalizeHealthRecord(raw) {
+            if (!raw || typeof raw !== 'object') return null;
+            let cs = raw.circuit_state ?? raw.circuitState ?? raw.circuit ?? raw.status ?? 'closed';
+            cs = String(cs).toLowerCase().replace(/-/g, '_');
+            if (cs === 'halfopen') cs = 'half_open';
+            const healthy = raw.healthy != null ? !!raw.healthy : cs !== 'open';
+            return { circuit_state: cs, healthy };
+        }
+
+        function normalizeFeedbackRecord(raw) {
+            if (!raw || typeof raw !== 'object') return null;
+            const lat = raw.latency_ema ?? raw.ema_latency_ms ?? raw.avg_latency_ms ?? raw.latency_ms;
+            let suc = raw.success_rate_ema ?? raw.success_rate ?? raw.successRate ?? raw.success;
+            if (typeof suc === 'number' && suc > 1) suc = suc / 100;
+            const ano = raw.anomaly_score ?? raw.anomaly ?? null;
+            const qual = raw.quality_score ?? raw.quality ?? null;
+            const sc = raw.sample_count != null ? Number(raw.sample_count) : 0;
+            if (
+                lat == null &&
+                suc == null &&
+                ano == null &&
+                qual == null &&
+                !sc
+            ) {
+                return null;
+            }
+            return {
+                latency_ema: lat != null ? Number(lat) : null,
+                success_rate_ema: suc != null ? Number(suc) : null,
+                anomaly_score: ano != null ? Number(ano) : null,
+                quality_score: qual != null ? Number(qual) : null,
+                sample_count: sc
+            };
+        }
+
+        function stripMockPrefix(id) {
+            const s = String(id || '');
+            return s.replace(/^mock-/i, '');
+        }
+
+        function registryProvidersRows() {
+            const jr = state.lastRegistryJson;
+            return jr && Array.isArray(jr.providers) ? jr.providers : [];
+        }
+
+        /** Map telemetry keys (e.g. cheap vs mock-cheap) onto registry provider rows. */
+        function canonicalizeProviderKey(rawId) {
+            const raw = String(rawId || '').trim();
+            if (!raw) return raw;
+            const rows = registryProvidersRows();
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const n = row.name || row.provider || row.id;
+                const pid = row.provider_id;
+                if (!n) continue;
+                const ns = String(n);
+                if (raw === ns || (pid && raw === String(pid))) return ns;
+                if (stripMockPrefix(raw) === stripMockPrefix(ns)) return ns;
+                if (pid && stripMockPrefix(raw) === stripMockPrefix(String(pid))) return ns;
+            }
+            const defs = state.providers || [];
+            const withMock = raw.startsWith('mock-') ? raw : `mock-${raw}`;
+            if (defs.includes(withMock)) return withMock;
+            if (defs.includes(raw)) return raw;
+            const fb = state.lastFeedbackJson || {};
+            for (const k of Object.keys(fb)) {
+                if (k === raw || stripMockPrefix(k) === stripMockPrefix(raw)) return k;
+            }
+            const hs = state.lastHealthSnapshot || {};
+            for (const k of Object.keys(hs)) {
+                if (k === raw || stripMockPrefix(k) === stripMockPrefix(raw)) return k;
+            }
+            return raw.startsWith('mock-') ? raw : withMock;
+        }
+
+        /** First matching record when API maps use mock-* or short ids interchangeably. */
+        function pickRawMetricRecord(map, canonicalName) {
+            if (!map || typeof map !== 'object') return null;
+            const c = String(canonicalName || '');
+            const candidates = new Set([c, stripMockPrefix(c), c.startsWith('mock-') ? c : `mock-${stripMockPrefix(c)}`]);
+            for (const k of candidates) {
+                if (k && map[k] != null && typeof map[k] === 'object') return map[k];
+            }
+            let best = null;
+            let bestKey = null;
+            for (const key of Object.keys(map)) {
+                if (stripMockPrefix(key) === stripMockPrefix(c)) {
+                    const v = map[key];
+                    if (v && typeof v === 'object') {
+                        best = v;
+                        bestKey = key;
+                        break;
+                    }
+                }
+            }
+            if (window.__INTELLIROUTE_DEBUG__ && best && bestKey && bestKey !== c) {
+                console.debug('[intelliroute/overview] alias metric join', { canonical: c, wireKey: bestKey });
+            }
+            return best;
+        }
+
+        function parseRoutingEventMessage(message) {
+            const m = String(message || '');
+            let rx = m.match(/Route to\s+(\S+)\s+\(([\d.]+)\s*ms/i);
+            if (!rx) rx = m.match(/→\s*(\S+)\s+\(([\d.]+)\s*ms/i);
+            if (!rx) return null;
+            return {
+                provider: rx[1],
+                latency_ms: parseFloat(rx[2]),
+                success: !/\bfail(ed)?\b/i.test(m)
+            };
+        }
+
+        /** Aggregate recent admin routing events into per-canonical-provider stats (real data only). */
+        function aggregateRouteTelemetryByCanonical() {
+            const out = {};
+            const events = state.recentAdminEvents || [];
+            for (let i = 0; i < events.length; i++) {
+                const ev = events[i];
+                if (ev.type !== 'routing') continue;
+                let prov = ev.provider;
+                let lat = ev.latency_ms != null ? Number(ev.latency_ms) : null;
+                let ok = ev.ok !== false && ev.success !== false;
+                if (prov == null || lat == null || Number.isNaN(lat)) {
+                    const parsed = parseRoutingEventMessage(ev.message);
+                    if (!parsed) continue;
+                    prov = parsed.provider;
+                    lat = parsed.latency_ms;
+                    ok = parsed.success !== false;
+                }
+                const canon = canonicalizeProviderKey(prov);
+                if (!out[canon]) out[canon] = { n: 0, okN: 0, latSum: 0, latN: 0 };
+                const g = out[canon];
+                g.n += 1;
+                if (ok) {
+                    g.okN += 1;
+                    if (lat != null && !Number.isNaN(lat)) {
+                        g.latSum += lat;
+                        g.latN += 1;
+                    }
+                }
+            }
+            const merged = {};
+            Object.keys(out).forEach((k) => {
+                const g = out[k];
+                merged[k] = {
+                    sample_count: g.n,
+                    success_rate: g.n ? g.okN / g.n : null,
+                    avg_latency_ms: g.latN ? g.latSum / g.latN : null
+                };
+            });
+            return merged;
+        }
+
+        function mergeFeedbackAndRouteForCanonical(canonicalName, fbSnap, routeByCanon) {
+            const rawFb = pickRawMetricRecord(fbSnap, canonicalName);
+            const m = normalizeFeedbackRecord(rawFb);
+            const rt = routeByCanon[canonicalName];
+            const latMs =
+                m && m.latency_ema != null ? m.latency_ema : rt && rt.avg_latency_ms != null ? rt.avg_latency_ms : null;
+            let sucRate =
+                m && m.success_rate_ema != null ? m.success_rate_ema : rt && rt.success_rate != null ? rt.success_rate : null;
+            if (typeof sucRate === 'number' && sucRate > 1) sucRate = sucRate / 100;
+            return {
+                normalized: m,
+                latency_ms: latMs,
+                success_rate_ema: sucRate,
+                route_samples: rt ? rt.sample_count : 0
+            };
+        }
+
+        function pickCostForProvider(byProv, canonicalName) {
+            if (!byProv || typeof byProv !== 'object') return undefined;
+            const c = String(canonicalName || '');
+            const candidates = [c, stripMockPrefix(c), c.startsWith('mock-') ? c : `mock-${stripMockPrefix(c)}`];
+            for (let i = 0; i < candidates.length; i++) {
+                const k = candidates[i];
+                if (Object.prototype.hasOwnProperty.call(byProv, k)) return byProv[k];
+            }
+            for (const k of Object.keys(byProv)) {
+                if (stripMockPrefix(k) === stripMockPrefix(c)) return byProv[k];
+            }
+            return undefined;
+        }
+
+        function runProviderTelemetrySelfCheck() {
+            if (!window.__INTELLIROUTE_DEBUG__) return;
+            const fb = state.lastFeedbackJson || {};
+            const keys = Object.keys(fb);
+            getOverviewProviderNames().forEach((p) => {
+                const overlap = keys.some((k) => stripMockPrefix(k) === stripMockPrefix(p));
+                const picked = pickRawMetricRecord(fb, p);
+                if (overlap && !picked) {
+                    console.warn('[intelliroute/overview] feedback join missed alias', { canonical: p, keys });
+                }
+            });
+        }
+
+        /** Canonical registry id: never use ambiguous `row.provider` (may collide). */
+        function registryRowCanonicalId(row) {
+            if (!row || typeof row !== 'object') return '';
+            const n = row.name != null ? String(row.name).trim() : '';
+            const pid = row.provider_id != null ? String(row.provider_id).trim() : '';
+            return n || pid;
+        }
+
+        function getOverviewProviderNames() {
+            const reg = state.lastRegistryJson;
+            const seen = new Set();
+            const out = [];
+            const add = (raw) => {
+                const s = String(raw || '').trim();
+                if (!s || seen.has(s)) return;
+                seen.add(s);
+                out.push(s);
+            };
+
+            const rows = reg && reg.providers;
+            if (Array.isArray(rows) && rows.length) {
+                rows.forEach((row) => add(registryRowCanonicalId(row)));
+            }
+            (state.providers || []).forEach(add);
+
+            out.sort((a, b) => a.localeCompare(b));
+
+            const total = reg && reg.providers_total != null ? Number(reg.providers_total) : null;
+            if (window.__INTELLIROUTE_DEBUG__ && total != null && out.length < total) {
+                console.warn('[intelliroute/overview] provider id list shorter than providers_total', {
+                    providers_total: total,
+                    arrayLen: Array.isArray(rows) ? rows.length : null,
+                    unionLen: out.length
+                });
+            }
+            return out;
+        }
+
+        function formatQuotaLeaderChip(qj) {
+            if (!qj || typeof qj !== 'object') return 'No quota data configured';
+            if (qj.empty_reason === 'error') return 'Quota data unavailable (request failed)';
+            if (!qj.quotas_enabled || qj.empty_reason === 'disabled') {
+                return 'No quota data configured (daily caps disabled)';
+            }
+            if (qj.empty_reason === 'no_limits') return 'No quota caps configured for providers';
+            if (qj.leader && qj.leader.provider) {
+                const u = Number(qj.leader.utilization || 0);
+                return `${qj.leader.provider} (${Math.round(u * 100)}% of daily cap · ${qj.leader.used}/${qj.leader.limit})`;
+            }
+            if (qj.empty_reason === 'no_usage') return 'No quota usage yet';
+            return 'No quota usage yet';
+        }
+
         async function updateMetrics() {
             if (state.currentView !== 'admin') return;
 
@@ -9391,16 +9767,71 @@
                 state.gatewayOk = false;
             }
 
-            // 1. Fetch health monitor snapshot (circuit breaker states)
+            state.lastRegistryJson = null;
+            state.registryStaleNames = [];
+            // 1a. Registry first so provider lists / circuit badges match discovery (gateway, then direct router)
+            const applyRegistryJson = (jr) => {
+                if (!jr || typeof jr !== 'object') return;
+                state.lastRegistryJson = jr;
+                state.registryStaleNames = jr.stale_names || [];
+                const routableNames = (jr.providers || [])
+                    .filter((row) => row && row.routable)
+                    .map((row) => registryRowCanonicalId(row))
+                    .filter(Boolean);
+                if (routableNames.length) {
+                    state.providers = [...new Set(routableNames.map(String))].sort();
+                }
+                const hint = document.getElementById('registryStaleHint');
+                if (hint) {
+                    const stale = jr.stale_names || [];
+                    hint.textContent = stale.length
+                        ? `Discovery: ${jr.providers_active}/${jr.providers_total} routable — stale: ${stale.join(', ')}`
+                        : `Discovery: ${jr.providers_active}/${jr.providers_total} routable`;
+                }
+            };
+            try {
+                const rr = await fetch(`${API_BASE}/v1/system/registry`);
+                if (rr.ok) applyRegistryJson(await rr.json());
+            } catch (e) { /* optional */ }
+            if ((!state.lastRegistryJson || !(state.lastRegistryJson.providers || []).length) && ROUTER_API) {
+                try {
+                    const rr2 = await fetch(`${ROUTER_API}/providers/registry`);
+                    if (rr2.ok) applyRegistryJson(await rr2.json());
+                } catch (e2) { /* optional */ }
+            }
+            // Heal truncated provider lists (gateway body shorter than providers_total)
+            if (ROUTER_API && state.lastRegistryJson) {
+                const jr0 = state.lastRegistryJson;
+                const arr0 = Array.isArray(jr0.providers) ? jr0.providers : [];
+                const pt0 = jr0.providers_total != null ? Number(jr0.providers_total) : null;
+                if (pt0 != null && arr0.length > 0 && arr0.length < pt0) {
+                    try {
+                        const rfix = await fetch(`${ROUTER_API}/providers/registry`);
+                        if (rfix.ok) {
+                            const jfix = await rfix.json();
+                            const arr1 = Array.isArray(jfix.providers) ? jfix.providers : [];
+                            if (arr1.length > arr0.length) applyRegistryJson(jfix);
+                        }
+                    } catch (ef) { /* optional */ }
+                }
+            }
+
+            // 1b. Health monitor snapshot (via gateway)
             state.lastHealthSnapshot = null;
             try {
-                const r = await fetch(`${API_BASE}/snapshot`);
+                const r = await fetch(`${API_BASE}/v1/system/health`);
                 if (r.ok) {
                     const body = await r.json();
-                    const snapshot = body.providers || {};
+                    const snapshot = extractProviderHealthMap(body);
                     state.lastHealthSnapshot = snapshot;
-                    state.providers.forEach(p => {
-                        const h = snapshot[p];
+                    if (window.__INTELLIROUTE_DEBUG__) {
+                        console.debug('[intelliroute/overview] system health', {
+                            providerKeys: Object.keys(snapshot || {})
+                        });
+                    }
+                    getOverviewProviderNames().forEach((p) => {
+                        const raw = pickRawMetricRecord(snapshot, p);
+                        const h = raw ? normalizeHealthRecord(raw) : null;
                         if (h) {
                             const cb = document.getElementById(`cb-${p}`);
                             if (cb) {
@@ -9411,27 +9842,6 @@
                     });
                 }
             } catch (e) { /* health monitor not yet up */ }
-
-            state.lastRegistryJson = null;
-            state.registryStaleNames = [];
-            // 1b. Discovery / heartbeat stale hint
-            if (ROUTER_API) {
-                try {
-                    const rr = await fetch(`${ROUTER_API}/providers/registry`);
-                    if (rr.ok) {
-                        const jr = await rr.json();
-                        state.lastRegistryJson = jr;
-                        state.registryStaleNames = jr.stale_names || [];
-                        const hint = document.getElementById('registryStaleHint');
-                        if (hint) {
-                            const stale = jr.stale_names || [];
-                            hint.textContent = stale.length
-                                ? `Discovery: ${jr.providers_active}/${jr.providers_total} routable — stale: ${stale.join(', ')}`
-                                : `Discovery: ${jr.providers_active}/${jr.providers_total} routable`;
-                        }
-                    }
-                } catch (e) { /* optional */ }
-            }
 
             state.lastBrownoutJson = null;
             // 1c. Brownout status
@@ -9454,30 +9864,49 @@
                 } catch (e) { /* optional */ }
             }
             state.lastFeedbackJson = null;
-            // 2. Fetch feedback metrics (EMA latency, success, anomaly)
-            if (ROUTER_API) {
-                try {
-                    const r = await fetch(`${ROUTER_API}/feedback`);
-                    if (r.ok) {
-                        const metrics = await r.json();
-                        state.lastFeedbackJson = metrics;
-                        state.providers.forEach(p => {
-                            const m = metrics[p];
-                            if (m) {
-                                const latEl = document.getElementById(`latency-${p}`);
-                                const sucEl = document.getElementById(`success-${p}`);
-                                const anoEl = document.getElementById(`anomaly-${p}`);
-                                const qualEl = document.getElementById(`quality-${p}`);
-                                if (latEl) latEl.textContent = Math.round(m.latency_ema) + 'ms';
-                                if (sucEl) sucEl.textContent = Math.round(m.success_rate_ema * 100) + '%';
-                                if (anoEl) anoEl.textContent = m.anomaly_score.toFixed(2);
-                                const q = (typeof m.quality_score === 'number') ? m.quality_score : 1.0;
-                                if (qualEl) qualEl.textContent = q.toFixed(2);
-                            }
-                        });
-                    }
-                } catch (e) { /* router not yet up */ }
-            }    
+            // 2. Completion EMA metrics (router /feedback via gateway)
+            try {
+                const r = await fetch(`${API_BASE}/v1/system/feedback-metrics`);
+                if (r.ok) {
+                    const metrics = await r.json();
+                    state.lastFeedbackJson = metrics;
+                    runProviderTelemetrySelfCheck();
+                    state.providers.forEach((p) => {
+                        const m = normalizeFeedbackRecord(pickRawMetricRecord(metrics, p));
+                        if (!m) return;
+                        const latEl = document.getElementById(`latency-${p}`);
+                        const sucEl = document.getElementById(`success-${p}`);
+                        const anoEl = document.getElementById(`anomaly-${p}`);
+                        const qualEl = document.getElementById(`quality-${p}`);
+                        if (latEl && m.latency_ema != null) latEl.textContent = Math.round(m.latency_ema) + 'ms';
+                        if (sucEl && m.success_rate_ema != null) {
+                            sucEl.textContent = Math.round(m.success_rate_ema * 100) + '%';
+                        }
+                        if (anoEl && m.anomaly_score != null) anoEl.textContent = m.anomaly_score.toFixed(2);
+                        if (qualEl && m.quality_score != null) qualEl.textContent = m.quality_score.toFixed(2);
+                    });
+                }
+            } catch (e) { /* router not yet up */ }
+
+            state.lastDailyQuotasJson = null;
+            try {
+                const dq = await fetch(`${API_BASE}/v1/system/daily-quotas`);
+                if (dq.ok) {
+                    state.lastDailyQuotasJson = await dq.json();
+                } else {
+                    state.lastDailyQuotasJson = {
+                        quotas_enabled: false,
+                        leader: null,
+                        empty_reason: 'error'
+                    };
+                }
+            } catch (e) {
+                state.lastDailyQuotasJson = {
+                    quotas_enabled: false,
+                    leader: null,
+                    empty_reason: 'error'
+                };
+            }
 
             state.lastQueueJson = null;
             // 3. Fetch queue stats
@@ -9513,7 +9942,7 @@
                     const perProvider = cost.by_provider || {};
                     let maxCost = 0.001;
                     state.providers.forEach(p => {
-                        const c = perProvider[p] || 0;
+                        const c = Number(pickCostForProvider(perProvider, p)) || 0;
                         state.costs[p] = c;
                         maxCost = Math.max(maxCost, c);
                     });
@@ -9550,6 +9979,23 @@
             }
 
             // 6. Fetch recent traces so curl/external requests appear in the live trace panel
+            if (!ROUTER_API) {
+                if (window.__INTELLIROUTE_DEBUG__) {
+                    const jr = state.lastRegistryJson;
+                    console.debug('[intelliroute/overview] snapshot', {
+                        gatewayOk: state.gatewayOk,
+                        registryArrayLen: jr && Array.isArray(jr.providers) ? jr.providers.length : null,
+                        providers_total: jr && jr.providers_total,
+                        tableNameUnion: getOverviewProviderNames().length,
+                        quotas: state.lastDailyQuotasJson
+                    });
+                }
+                refreshAdminOverviewPanels();
+                renderProvidersScreen();
+                renderCostQuotasScreen();
+                renderLiveOpsScreen();
+                return;
+            }
             try {
                 const r = await fetch(`${ROUTER_API}/traces?limit=1`);
                 if (r.ok) {
@@ -9577,12 +10023,32 @@
                                 decide: syntheticDecide,
                                 error: null,
                             };
-                            addEvent('routing', `[External] Route to ${newest.completion.provider} (${Math.round(newest.completion.latency_ms)}ms, $${(newest.completion.estimated_cost_usd || 0).toFixed(4)})`);
+                            addEvent(
+                                'routing',
+                                `[External] Route to ${newest.completion.provider} (${Math.round(newest.completion.latency_ms)}ms, $${(newest.completion.estimated_cost_usd || 0).toFixed(4)})`,
+                                {
+                                    provider: newest.completion.provider,
+                                    latency_ms: newest.completion.latency_ms,
+                                    estimated_cost_usd: newest.completion.estimated_cost_usd,
+                                    ok: true
+                                }
+                            );
                             renderLiveTrace();
                         }
                     }
                 }
             } catch (e) { /* router not yet up */ }
+
+            if (window.__INTELLIROUTE_DEBUG__) {
+                const jr = state.lastRegistryJson;
+                console.debug('[intelliroute/overview] snapshot', {
+                    gatewayOk: state.gatewayOk,
+                    registryArrayLen: jr && Array.isArray(jr.providers) ? jr.providers.length : null,
+                    providers_total: jr && jr.providers_total,
+                    tableNameUnion: getOverviewProviderNames().length,
+                    quotas: state.lastDailyQuotasJson
+                });
+            }
 
             refreshAdminOverviewPanels();
             renderProvidersScreen();
@@ -9657,7 +10123,11 @@
 
                     if (response.ok) {
                         const data = await response.json();
-                        addEvent('routing', `[Burst ${i + 1}] → ${data.provider} (${data.latency_ms}ms)`);
+                        addEvent('routing', `[Burst ${i + 1}] → ${data.provider} (${data.latency_ms}ms)`, {
+                            provider: data.provider,
+                            latency_ms: data.latency_ms,
+                            ok: true
+                        });
                     } else {
                         const code = response.status;
                         addEvent(code === 429 ? 'rate-limit' : 'error', `[Burst ${i + 1}] HTTP ${code}`);

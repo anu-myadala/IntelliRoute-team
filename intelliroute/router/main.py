@@ -295,6 +295,63 @@ async def providers_registry() -> dict:
     }
 
 
+@app.get("/admin/daily-quotas")
+async def admin_daily_quotas() -> dict[str, Any]:
+    """Admin Overview: per-provider daily request caps vs usage (opt-in feature)."""
+    enabled = bool(settings.enable_provider_daily_quotas)
+    if not enabled:
+        return {
+            "quotas_enabled": False,
+            "entries": [],
+            "leader": None,
+            "empty_reason": "disabled",
+        }
+    usage_map = daily_quota_tracker.usage_snapshot_today()
+    names: set[str] = set(usage_map.keys())
+    for entry in registry.all_entries():
+        names.add(entry.info.name)
+    entries: list[dict[str, Any]] = []
+    for name in sorted(names):
+        lim = daily_quota_limit(name, settings)
+        if lim is None:
+            continue
+        used = int(usage_map.get(name, 0))
+        remaining = max(0, int(lim) - used)
+        util = (used / float(lim)) if lim else 0.0
+        entries.append(
+            {
+                "provider": name,
+                "used": used,
+                "limit": int(lim),
+                "remaining": remaining,
+                "utilization": round(util, 4),
+            }
+        )
+    if not entries:
+        return {
+            "quotas_enabled": True,
+            "entries": [],
+            "leader": None,
+            "empty_reason": "no_limits",
+        }
+    leader_row = max(entries, key=lambda x: (x["utilization"], x["used"], x["provider"]))
+    leader: dict[str, Any] | None = None
+    if leader_row["used"] > 0:
+        leader = {
+            "provider": leader_row["provider"],
+            "utilization": leader_row["utilization"],
+            "used": leader_row["used"],
+            "limit": leader_row["limit"],
+            "remaining": leader_row["remaining"],
+        }
+    return {
+        "quotas_enabled": True,
+        "entries": entries,
+        "leader": leader,
+        "empty_reason": None if leader else "no_usage",
+    }
+
+
 @app.delete("/providers/{name}")
 async def deregister_provider(name: str) -> dict:
     registry.deregister(name)

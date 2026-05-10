@@ -45,6 +45,14 @@ class DailyQuotaTracker:
         with self._lock:
             return self._counts.get((day, provider), 0)
 
+    def usage_snapshot_today(self) -> dict[str, int]:
+        """All successful-completion counts for the current UTC day."""
+        day = self._day_fn()
+        with self._lock:
+            return {
+                p: c for (d, p), c in self._counts.items() if d == day
+            }
+
     def record_successful_completion(self, provider: str) -> None:
         day = self._day_fn()
         with self._lock:

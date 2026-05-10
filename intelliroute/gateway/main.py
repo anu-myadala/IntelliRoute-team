@@ -127,6 +127,55 @@ async def system_health() -> dict:
     return {"providers": snapshot}
 
 
+@app.get("/v1/system/registry")
+async def system_registry() -> dict:
+    """Passthrough to router provider registry (admin / dashboard)."""
+    assert _http is not None
+    try:
+        r = await _http.get(f"{settings.router_url}/providers/registry")
+        if r.status_code != 200:
+            return {"providers": [], "providers_active": 0, "providers_total": 0, "stale_names": []}
+        return r.json() if _is_json(r) else {}
+    except Exception:
+        return {"providers": [], "providers_active": 0, "providers_total": 0, "stale_names": []}
+
+
+@app.get("/v1/system/feedback-metrics")
+async def system_feedback_metrics() -> dict:
+    """Passthrough to router in-process completion EMA metrics."""
+    assert _http is not None
+    try:
+        r = await _http.get(f"{settings.router_url}/feedback")
+        if r.status_code != 200:
+            return {}
+        return r.json() if _is_json(r) else {}
+    except Exception:
+        return {}
+
+
+@app.get("/v1/system/daily-quotas")
+async def system_daily_quotas() -> dict:
+    """Passthrough to router daily quota snapshot for admin Overview."""
+    assert _http is not None
+    try:
+        r = await _http.get(f"{settings.router_url}/admin/daily-quotas")
+        if r.status_code != 200:
+            return {
+                "quotas_enabled": False,
+                "entries": [],
+                "leader": None,
+                "empty_reason": "error",
+            }
+        return r.json() if _is_json(r) else {}
+    except Exception:
+        return {
+            "quotas_enabled": False,
+            "entries": [],
+            "leader": None,
+            "empty_reason": "error",
+        }
+
+
 @app.post("/v1/feedback")
 async def submit_feedback(
     body: dict,
