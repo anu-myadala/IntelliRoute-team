@@ -5021,7 +5021,7 @@
     <div id="appShell" data-workspace="welcome" style="height:100vh;display:flex;flex-direction:column;">
         <header id="topBar" class="glass app-topbar" style="display:none;justify-content:space-between;">
             <div class="app-topbar-brand app-topbar-brand--stack">
-                <div class="app-topbar-name">LatticeAI</div>
+                <div class="app-topbar-name">IntelliRoute</div>
                 <div id="workspaceSubtitle" class="app-topbar-subtitle">User Workspace</div>
             </div>
             <div class="app-topbar-actions">
@@ -5054,8 +5054,8 @@
                 <div class="welcome-split">
                     <div class="welcome-hero">
                         <div class="welcome-hero-glow" aria-hidden="true"></div>
-                        <div class="welcome-brand">Product · <span>LatticeAI</span></div>
-                        <h1 class="welcome-title">Welcome to LatticeAI</h1>
+                        <div class="welcome-brand">Product · <span>IntelliRoute</span></div>
+                        <h1 class="welcome-title">Welcome to IntelliRoute</h1>
                         <p class="welcome-lead">
                             A distributed LLM control plane that routes every request across providers with intent-aware policies,
                             global quotas, and full-stack observability—so teams ship faster without babysitting models.
@@ -5085,7 +5085,7 @@
                         <article class="entry-card entry-card--user">
                             <div class="entry-card-icon" aria-hidden="true">✨</div>
                             <h3>User Workspace</h3>
-                            <p>Prompt studio and responses tuned for clarity. LatticeAI picks the model path—you focus on the task.</p>
+                            <p>Prompt studio and responses tuned for clarity. IntelliRoute picks the model path—you focus on the task.</p>
                             <button type="button" id="enterUserBtn" class="btn-entry-primary">Open User Workspace</button>
                         </article>
                         <article class="entry-card entry-card--admin">
@@ -5120,7 +5120,7 @@
                         </select>
 
                         <div id="userStateEmpty" class="user-state-panel is-active" data-user-state="empty">
-                            <div class="user-studio-eyebrow">LatticeAI Studio</div>
+                            <div class="user-studio-eyebrow">IntelliRoute Studio</div>
                             <h2 class="user-studio-title">What would you like to solve?</h2>
                             <p class="user-studio-sub">Describe your task in natural language. We route across providers and tune for speed, quality, and cost—no manual model picking.</p>
 
@@ -5171,7 +5171,7 @@
                             <div class="user-response-card">
                                 <div class="user-response-meta">
                                     <div>
-                                        <div id="handledByText" class="user-badge-primary">Handled by LatticeAI</div>
+                                        <div id="handledByText" class="user-badge-primary">Handled by IntelliRoute</div>
                                         <div id="handledSubText" class="user-badge-secondary"></div>
                                     </div>
                                     <div class="user-response-actions">
@@ -5224,7 +5224,7 @@
                     <div class="admin-overview">
                         <div class="admin-overview-head">
                             <h1>Control plane overview</h1>
-                            <p>LatticeAI — health, traffic, cost, and providers at a glance</p>
+                            <p>IntelliRoute — health, traffic, cost, and providers at a glance</p>
                         </div>
 
                         <div class="admin-status-strip" aria-label="System status">
@@ -5378,7 +5378,7 @@
 
                             <section class="lt-section" aria-labelledby="ltJourneyHeading">
                                 <h2 id="ltJourneyHeading" class="lt-section-title">Routing journey</h2>
-                                <p class="lt-section-sub">How this request moved through LatticeAI — from intake to model output.</p>
+                                <p class="lt-section-sub">How this request moved through IntelliRoute — from intake to model output.</p>
                                 <div class="lt-journey-wrap">
                                     <div class="lt-journey" id="ltJourney" role="list"></div>
                                 </div>
@@ -5719,7 +5719,7 @@
         const COST_API = null;       // Cost tracker
         const ADMIN_API = null;      // mock-smart (force_fail)
         const RL_PORTS = [];            // Rate limiter replicas
-        const USER_HISTORY_KEY = 'latticeUserPromptHistory';
+        const USER_HISTORY_KEY = 'intelliRouteUserPromptHistory';
         /** Header / profile: never surface raw tenant ids (e.g. demo-tenant) in user chrome. */
         const USER_FACING_NAME = 'Demo user';
 
@@ -7374,7 +7374,7 @@
             if (!responseContent || !handledByText) return;
             responseContent.textContent = data.content || 'No response content returned.';
             if (data.provider) {
-                handledByText.textContent = 'Handled by LatticeAI';
+                handledByText.textContent = 'Handled by IntelliRoute';
                 if (handledSubText) {
                     const ms = data.latency_ms != null ? `${data.latency_ms}ms` : null;
                     const model = data.model ? ` · model ${data.model}` : '';
