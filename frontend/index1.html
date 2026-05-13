@@ -7318,16 +7318,17 @@
                 highlightProvider(data.provider);
 
                 let decideJson = null;
-                if (ROUTER_API) {
-                    try {
-                        const dRes = await fetch(`${ROUTER_API}/decide`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(traceBody)
-                        });
-                        if (dRes.ok) decideJson = await dRes.json();
-                    } catch (e2) { /* router optional */ }
-                }
+                try {
+                    const dRes = await fetch(`${API_BASE}/v1/decide`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-API-Key': 'demo-key-123'
+                        },
+                        body: JSON.stringify(traceBody)
+                    });
+                    if (dRes.ok) decideJson = await dRes.json();
+                } catch (e2) { /* decision trace optional */ }
                 state.lastAdminTrace = {
                     sentAt: Date.now(),
                     intentHint: intent,

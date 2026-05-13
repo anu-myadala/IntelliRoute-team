@@ -269,6 +269,33 @@ async def feedback_analyze(
     return detail
 
 
+@app.post("/v1/decide")
+async def decide(
+    req: CompletionRequest,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    x_request_id: Optional[str] = Header(default=None, alias="X-Request-Id"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    authoritative = req.model_copy(update={"tenant_id": tenant})
+
+    trace_id = x_request_id or str(uuid.uuid4())
+
+    assert _http is not None
+    r = await _http.post(
+        f"{settings.router_url}/decide",
+        json=authoritative.model_dump(),
+        headers={"X-Request-Id": trace_id},
+    )
+
+    detail = r.json() if _is_json(r) else {"detail": "router error"}
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=r.status_code,
+            detail=detail.get("detail", detail),
+        )
+
+    return detail
+
 def _is_json(r: httpx.Response) -> bool:
     ct = r.headers.get("content-type", "")
     return "application/json" in ct
