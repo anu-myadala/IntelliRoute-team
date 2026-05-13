@@ -11,6 +11,8 @@ IntelliRoute sits between client applications and LLM providers (OpenAI, Anthrop
 
 ## For the professor — the 60-second version
 
+**Cloud deployment:** https://intelli-route-team.vercel.app/ — hosted dashboard for quick demo access.
+
 - **What it is:** a Python/FastAPI microservices system (gateway, router, rate limiter, cost tracker, health monitor, mock providers) that demonstrates the major distributed-systems concepts from CMPE 273 in a single coherent project.
 - **How to run it:** create a venv, `pip install -e .[dev]`, then `PYTHONPATH=. python3 scripts/start_stack.py`. Open `http://127.0.0.1:3000` for the live demo dashboard, or call `http://127.0.0.1:8000` directly with the demo API key. Full step-by-step in [Quick start](#quick-start).
 - **How to verify it works:** `PYTHONPATH=. python3 -m pytest tests/` runs the **265-test** suite (252 unit + 13 end-to-end integration tests that spawn the full stack on ephemeral ports). Should finish in ~12 s on a laptop.
