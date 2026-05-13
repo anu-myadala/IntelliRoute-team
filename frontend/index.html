@@ -5230,11 +5230,11 @@
 
                         <div class="user-demo-controls" aria-label="Failure and recovery demo controls">
                             <div class="demo-controls">
-                                <button type="button" class="btn-demo btn-fail" id="forceFailBtn">Force Fail</button>
-                                <button type="button" class="btn-demo btn-recover" id="recoverBtn">Recover</button>
+                                <button type="button" class="btn-demo btn-fail" id="forceFailBtn">Force Fail Gemini</button>
+                                <button type="button" class="btn-demo btn-recover" id="recoverBtn">Recover Gemini</button>
                                 <button type="button" class="btn-demo" id="burstTestBtn">Burst Test (20)</button>
                             </div>
-                            <div class="demo-controls-note">Local mock demo controls target <strong>mock-smart</strong> on port 9002.</div>
+                            <div class="demo-controls-note">Force-fail demo toggles <strong>Gemini</strong>; reasoning/code then fall back to Groq and mocks.</div>
                         </div>
                     </div>
                 </div>
@@ -5750,7 +5750,7 @@
         const RATE_LIMITER_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:8002' : null; // Rate limiter rl-0
         const HEALTH_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:8004' : null;     // Health monitor
         const COST_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:8003' : null;       // Cost tracker
-        const ADMIN_API = IS_LOCAL_DEMO ? 'http://127.0.0.1:9002' : null;      // mock-smart (force_fail)
+        const ADMIN_API = API_BASE;      // Gateway proxy for provider force_fail
         const RL_PORTS = IS_LOCAL_DEMO ? [8002, 8012, 8022] : [];            // Rate limiter replicas
         const USER_HISTORY_KEY = 'intelliRouteUserPromptHistory';
         /** Header / profile: never surface raw tenant ids (e.g. demo-tenant) in user chrome. */
@@ -10057,18 +10057,18 @@
         }
 
         async function forceFailProvider() {
-            if (!ADMIN_API) {
-                addEvent('error', 'Provider force-fail is only available when running the local mock stack');
-                return;
-            }
             try {
-                await fetch(`${ADMIN_API}/admin/force_fail`, {
+                const response = await fetch(`${ADMIN_API}/v1/admin/providers/gemini/force_fail`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'demo-key-123'
+                    },
                     body: JSON.stringify({ fail: true })
                 });
+                if (!response.ok) throw new Error('force_fail failed');
                 state.failedProvider = true;
-                addEvent('error', 'mock-smart forced to fail');
+                addEvent('error', 'gemini forced to fail');
                 const btn = document.getElementById('forceFailBtn');
                 if (btn) btn.style.opacity = '0.5';
                 updateMetrics();
@@ -10078,18 +10078,18 @@
         }
 
         async function recoverProvider() {
-            if (!ADMIN_API) {
-                addEvent('error', 'Provider force-fail is only available when running the local mock stack');
-                return;
-            }   
             try {
-                await fetch(`${ADMIN_API}/admin/force_fail`, {
+                const response = await fetch(`${ADMIN_API}/v1/admin/providers/gemini/force_fail`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'demo-key-123'
+                    },
                     body: JSON.stringify({ fail: false })
                 });
+                if (!response.ok) throw new Error('force_fail recover failed');
                 state.failedProvider = false;
-                addEvent('success', 'mock-smart recovered');
+                addEvent('success', 'gemini recovered');
                 const btn = document.getElementById('forceFailBtn');
                 if (btn) btn.style.opacity = '1';
                 updateMetrics();

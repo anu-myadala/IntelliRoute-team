@@ -5720,7 +5720,7 @@
         const RATE_LIMITER_API = null; // Rate limiter rl-0
         const HEALTH_API = null;     // Health monitor
         const COST_API = null;       // Cost tracker
-        const ADMIN_API = null;      // mock-smart (force_fail)
+        const ADMIN_API = API_BASE;      // Gateway proxy for provider force_fail
         const RL_PORTS = [];            // Rate limiter replicas
         const USER_HISTORY_KEY = 'intelliRouteUserPromptHistory';
         /** Header / profile: never surface raw tenant ids (e.g. demo-tenant) in user chrome. */
@@ -9960,40 +9960,42 @@
         }
 
         async function forceFailProvider() {
-            if (!ADMIN_API) {
-                addEvent('error', 'Provider force-fail is unavailable in cloud mode');
-                return;
-            }
             try {
-                await fetch(`${ADMIN_API}/admin/force_fail`, {
+                const response = await fetch(`${ADMIN_API}/v1/admin/providers/gemini/force_fail`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'demo-key-123'
+                    },
                     body: JSON.stringify({ fail: true })
                 });
+                if (!response.ok) throw new Error('force_fail failed');
                 state.failedProvider = true;
-                addEvent('error', 'Provider forced to fail');
+                addEvent('error', 'gemini forced to fail');
                 const btn = document.getElementById('forceFailBtn');
                 if (btn) btn.style.opacity = '0.5';
+                updateMetrics();
             } catch (error) {
                 addEvent('error', 'Failed to force provider failure');
             }
         }
 
         async function recoverProvider() {
-            if (!ADMIN_API) {
-                addEvent('error', 'Provider force-fail is unavailable in cloud mode');
-                return;
-            }   
             try {
-                await fetch(`${ADMIN_API}/admin/force_fail`, {
+                const response = await fetch(`${ADMIN_API}/v1/admin/providers/gemini/force_fail`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'demo-key-123'
+                    },
                     body: JSON.stringify({ fail: false })
                 });
+                if (!response.ok) throw new Error('force_fail recover failed');
                 state.failedProvider = false;
-                addEvent('success', 'Provider recovered');
+                addEvent('success', 'gemini recovered');
                 const btn = document.getElementById('forceFailBtn');
                 if (btn) btn.style.opacity = '1';
+                updateMetrics();
             } catch (error) {
                 addEvent('error', 'Failed to recover provider');
             }

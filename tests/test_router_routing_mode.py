@@ -60,3 +60,57 @@ def test_latency_first_orders_by_static_latency() -> None:
 def test_default_intelliroute_still_works() -> None:
     ranked = _rank_candidates("intelliroute", _providers(), {}, Intent.INTERACTIVE, _req())
     assert ranked
+<<<<<<< HEAD
+=======
+
+
+def test_reasoning_code_ladder_prefers_gemini_then_groq_then_mocks() -> None:
+    providers = [
+        ProviderInfo(
+            name="mock-smart",
+            url="http://mock-smart",
+            model="smart-1",
+            provider_type="mock",
+            capability={"reasoning": 0.99, "code": 0.99},
+            cost_per_1k_tokens=0.02,
+            typical_latency_ms=100,
+            capability_tier=3,
+        ),
+        ProviderInfo(
+            name="groq",
+            url="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            provider_type="groq",
+            capability={"reasoning": 0.75, "code": 0.75},
+            cost_per_1k_tokens=0.0007,
+            typical_latency_ms=500,
+            capability_tier=2,
+        ),
+        ProviderInfo(
+            name="mock-fast",
+            url="http://mock-fast",
+            model="fast-1",
+            provider_type="mock",
+            capability={"reasoning": 0.45, "code": 0.6},
+            cost_per_1k_tokens=0.002,
+            typical_latency_ms=30,
+            capability_tier=2,
+        ),
+        ProviderInfo(
+            name="gemini",
+            url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-2.5-flash",
+            provider_type="gemini",
+            capability={"reasoning": 0.97, "code": 0.91},
+            cost_per_1k_tokens=0.0035,
+            typical_latency_ms=1200,
+            capability_tier=3,
+        ),
+    ]
+
+    reasoning = _rank_candidates("intelliroute", providers, {}, Intent.REASONING, _req())
+    code = _rank_candidates("intelliroute", providers, {}, Intent.CODE, _req())
+
+    assert [s.provider.name for s in reasoning[:3]] == ["gemini", "groq", "mock-smart"]
+    assert [s.provider.name for s in code[:3]] == ["gemini", "groq", "mock-smart"]
+>>>>>>> gemini-groq-failover-demo

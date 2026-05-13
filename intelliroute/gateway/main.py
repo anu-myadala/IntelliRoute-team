@@ -21,6 +21,7 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from ..common.config import settings
 from ..common.logging import get_logger, log_event
@@ -138,6 +139,33 @@ async def system_registry() -> dict:
         return r.json() if _is_json(r) else {}
     except Exception:
         return {"providers": [], "providers_active": 0, "providers_total": 0, "stale_names": []}
+
+
+class AdminForceFailBody(BaseModel):
+    fail: bool = True
+
+
+@app.post("/v1/admin/providers/{name}/force_fail")
+async def admin_provider_force_fail(
+    name: str,
+    body: AdminForceFailBody,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    """Authenticated gateway proxy for demo mock fault injection.
+
+    The browser can reach the gateway in cloud deployments, while provider admin
+    ports remain private inside the backend container.
+    """
+    _auth(x_api_key)
+    assert _http is not None
+    r = await _http.post(
+        f"{settings.router_url}/admin/providers/{name}/force_fail",
+        json=body.model_dump(),
+    )
+    detail = r.json() if _is_json(r) else {"detail": "router error"}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=detail.get("detail", detail))
+    return detail
 
 
 @app.get("/v1/system/feedback-metrics")

@@ -17,6 +17,7 @@ import asyncio
 import collections
 import json
 import os
+import random
 import time
 import uuid
 from typing import Any, Literal, Optional
@@ -93,6 +94,31 @@ _rr_cursor = 0
 # Ring buffer of the 50 most recent completed traces, newest first.
 # Each entry: {sent_at_ms, request_id, request_text, intent, completion}
 _recent_traces: collections.deque[dict[str, Any]] = collections.deque(maxlen=50)
+
+# Demo fault-injection flags.  Mock providers can still be toggled through their
+# own /admin/force_fail endpoint, but external providers (Gemini/Groq) do not
+# have a safe public admin API.  For those, the router simulates an upstream
+# outage before any real API call is made so the deployed demo can show live
+# fallback without burning tokens or depending on third-party downtime.
+_forced_provider_failures: dict[str, bool] = {}
+
+
+def _provider_key(name: str) -> str:
+    return (name or "").strip().lower()
+
+
+def _set_provider_force_failed(name: str, fail: bool) -> None:
+    key = _provider_key(name)
+    if not key:
+        return
+    if fail:
+        _forced_provider_failures[key] = True
+    else:
+        _forced_provider_failures.pop(key, None)
+
+
+def _is_provider_force_failed(name: str) -> bool:
+    return bool(_forced_provider_failures.get(_provider_key(name), False))
 
 
 def _get_routing_mode() -> str:
@@ -350,6 +376,82 @@ async def admin_daily_quotas() -> dict[str, Any]:
         "leader": leader,
         "empty_reason": None if leader else "no_usage",
     }
+
+
+class AdminForceFailBody(BaseModel):
+    fail: bool = True
+
+
+@app.post("/admin/providers/{name}/force_fail")
+async def admin_provider_force_fail(name: str, body: AdminForceFailBody = AdminForceFailBody()) -> dict:
+    """Demo fault-injection hook for mock and external providers.
+
+    Cloud deployments only expose the gateway publicly; mock provider admin ports
+    stay bound to localhost inside the container, and external providers do not
+    expose an admin toggle at all.  This endpoint lets the gateway toggle a
+    router-level failure flag for any registered provider.  For mocks, it also
+    forwards the toggle to the mock process so local demos keep their visible
+    provider health behavior.
+    """
+    info = registry.get(name)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"provider {name!r} is not registered")
+
+    provider_type = (info.provider_type or "mock").lower()
+    _set_provider_force_failed(info.name, bool(body.fail))
+
+    if provider_type != "mock":
+        log_event(
+            log,
+            "provider_force_fail_toggled",
+            provider=info.name,
+            provider_type=provider_type,
+            fail=body.fail,
+            mode="router_simulated",
+        )
+        return {
+            "provider": info.name,
+            "provider_type": provider_type,
+            "force_fail": body.fail,
+            "mode": "router_simulated",
+        }
+
+    assert _http is not None
+    try:
+        r = await _http.post(
+            f"{info.url}/admin/force_fail",
+            json={"fail": body.fail},
+            timeout=3.0,
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"could not reach mock provider {name!r}: {exc}",
+        ) from exc
+
+    detail = r.json() if _is_json_response(r) else {"detail": r.text}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=detail.get("detail", detail))
+
+    log_event(
+        log,
+        "provider_force_fail_toggled",
+        provider=info.name,
+        provider_type=provider_type,
+        fail=body.fail,
+        mode="mock_proxy_and_router_simulated",
+    )
+    return {
+        "provider": info.name,
+        "provider_type": provider_type,
+        "force_fail": body.fail,
+        "mode": "mock_proxy_and_router_simulated",
+        "upstream": detail,
+    }
+
+
+def _is_json_response(r: httpx.Response) -> bool:
+    return "application/json" in r.headers.get("content-type", "")
 
 
 @app.delete("/providers/{name}")
@@ -707,6 +809,53 @@ def _completion_feedback_previews(req: CompletionRequest, response_text: str) ->
     )
 
 
+def _provider_fallback_group(provider: ProviderInfo) -> int:
+    """Explicit deployed-demo ladder for reasoning/code traffic.
+
+    Gemini remains the premium first choice for reasoning/code. If it fails,
+    Groq is the next real provider. If Groq also fails, every mock provider is
+    still available as a safe demo fallback. Unknown/custom providers are kept
+    after the built-in mocks.
+    """
+    name = _provider_key(provider.name)
+    ptype = (provider.provider_type or "mock").strip().lower()
+    if name == "gemini" or ptype == "gemini":
+        return 0
+    if name == "groq" or ptype == "groq":
+        return 1
+    if ptype == "mock" or name.startswith("mock-"):
+        return 2
+    return 3
+
+
+def _apply_reasoning_code_fallback_ladder(
+    ranked: list[ScoredProvider], intent: Intent
+) -> list[ScoredProvider]:
+    """For reasoning/code, prefer Gemini -> Groq -> mocks -> custom providers."""
+    if intent not in {Intent.REASONING, Intent.CODE} or len(ranked) < 2:
+        return ranked
+
+    # Preserve the policy's score inside each fallback band. This keeps
+    # mock-smart ahead of cheaper/lower-capability mocks for reasoning/code,
+    # while still forcing Groq to be the first real fallback after Gemini.
+    return sorted(
+        ranked,
+        key=lambda s: (
+            _provider_fallback_group(s.provider),
+            -s.score,
+            s.provider.typical_latency_ms,
+            s.provider.name,
+        ),
+    )
+
+
+def _reorder_pending_after_failure(
+    remaining: list[ScoredProvider], failed_tier: int, intent: Intent
+) -> list[ScoredProvider]:
+    reordered = policy.reorder_after_failure(remaining, failed_tier)
+    return _apply_reasoning_code_fallback_ladder(reordered, intent)
+
+
 async def _execute_completion(
     request_id: str, req: CompletionRequest
 ) -> CompletionResponse:
@@ -829,7 +978,7 @@ async def _execute_completion(
             )
             last_error = f"daily_quota_exhausted:{info.name}"
             fallback_used = True
-            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            pending = _reorder_pending_after_failure(pending, info.capability_tier, intent)
             attempts += 1
             continue
 
@@ -843,7 +992,7 @@ async def _execute_completion(
                 max_retries=info.max_retries,
             )
             fallback_used = True
-            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            pending = _reorder_pending_after_failure(pending, info.capability_tier, intent)
             attempts += 1
             continue
 
@@ -854,7 +1003,7 @@ async def _execute_completion(
             )
             last_error = f"rate_limited:{info.name}"
             fallback_used = True
-            pending = policy.reorder_after_failure(pending, info.capability_tier)
+            pending = _reorder_pending_after_failure(pending, info.capability_tier, intent)
             i += 1
             attempts += 1
             continue
@@ -862,7 +1011,12 @@ async def _execute_completion(
         ok, latency_ms, data, error_kind, error_retry_after_ms, status_code, retryable = await _call_provider(
             info, effective_req
         )
-        asyncio.create_task(_report_health(info.name, ok, latency_ms))
+        # Real upstream failures should update the circuit breaker.  The demo
+        # force-fail flag is intentionally local to the router so the UI can
+        # show Gemini -> Groq fallback repeatedly and recover immediately when
+        # the flag is cleared.
+        if error_kind != "forced_failure":
+            asyncio.create_task(_report_health(info.name, ok, latency_ms))
         weight_tuner.observe(intent, scored.sub_scores, ok)
 
         # Record feedback outcome
@@ -921,7 +1075,7 @@ async def _execute_completion(
                 await asyncio.sleep(backoff_ms / 1000.0)
                 pending.insert(0, scored)
             else:
-                pending = policy.reorder_after_failure(pending, info.capability_tier)
+                pending = _reorder_pending_after_failure(pending, info.capability_tier, intent)
             i += 1
             attempts += 1
             continue
@@ -1031,8 +1185,17 @@ async def _execute_completion(
 async def _call_provider(
     info: ProviderInfo, req: CompletionRequest
 ) -> tuple[bool, float, dict | None, str | None, int, int | None, bool]:
-    assert _http is not None
     start = time.monotonic()
+    if _is_provider_force_failed(info.name):
+        log_event(
+            log,
+            "provider_call_forced_failure",
+            provider=info.name,
+            provider_type=info.provider_type,
+        )
+        return False, (time.monotonic() - start) * 1000, None, "forced_failure", 0, 503, False
+
+    assert _http is not None
     intent = classify(req)
     timeout_s = _provider_timeout_s(info, intent)
     try:
@@ -1101,13 +1264,14 @@ def _rank_candidates(
             key=lambda p: (-p.capability_tier, p.typical_latency_ms, p.cost_per_1k_tokens, p.name),
         )
         return _naive_scored(ordered)
-    return policy.rank(
+    ranked = policy.rank(
         candidates,
         health=health,
         intent=intent,
         latency_budget_ms=req.latency_budget_ms,
         confidence_hint=req.confidence_hint,
     )
+    return _apply_reasoning_code_fallback_ladder(ranked, intent)
 
 
 class RouteDecision(BaseModel):
@@ -1144,6 +1308,7 @@ class ResetPayload(BaseModel):
     reset_routing_mode: bool = True
     reset_provider_daily_quotas: bool = True
     reset_user_feedback: bool = True
+    reset_provider_force_failures: bool = True
 
 
 @app.get("/weights")
@@ -1183,6 +1348,8 @@ async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
         daily_quota_tracker.clear()
     if body.reset_user_feedback:
         user_feedback.reset()
+    if body.reset_provider_force_failures:
+        _forced_provider_failures.clear()
     _rr_cursor = 0
     return {
         "ok": True,
@@ -1194,6 +1361,7 @@ async def reset_runtime_state(body: ResetPayload = ResetPayload()) -> dict:
         "reset_routing_mode": body.reset_routing_mode,
         "reset_provider_daily_quotas": body.reset_provider_daily_quotas,
         "reset_user_feedback": body.reset_user_feedback,
+        "reset_provider_force_failures": body.reset_provider_force_failures,
     }
 
 
