@@ -1,0 +1,274 @@
+"""API Gateway service.
+
+The gateway is the public-facing entry point for IntelliRoute. It:
+
+1. Authenticates clients via a simple X-API-Key header (tenant lookup).
+2. Forwards requests to the router, which owns the orchestration logic.
+3. Exposes read-only passthroughs for cost summaries and system health
+   (so clients/dashboards don't have to speak to internal services).
+
+In a production deployment this would also do:
+- Input validation / schema enforcement (handled here via Pydantic)
+- Request tracing propagation (we add an X-Request-Id header)
+- Load balancing across router replicas (here: single replica)
+"""
+from __future__ import annotations
+
+import os
+import uuid
+from typing import Optional
+
+import httpx
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from ..common.config import settings
+from ..common.logging import get_logger, log_event
+from ..common.models import CompletionRequest, CompletionResponse, CostSummary
+
+log = get_logger("gateway")
+
+# Very simple API key -> tenant mapping. A real deployment would back this
+# with a database and rotating secrets.
+API_KEYS: dict[str, str] = {
+    os.environ.get("INTELLIROUTE_DEMO_KEY", "demo-key-123"): "demo-tenant",
+    os.environ.get("INTELLIROUTE_VIP_KEY", "vip-key-456"): "vip-tenant",
+}
+
+app = FastAPI(title="IntelliRoute Gateway")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+_http: Optional[httpx.AsyncClient] = None
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    global _http
+    _http = httpx.AsyncClient(timeout=10.0)
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    if _http is not None:
+        await _http.aclose()
+
+
+def _auth(api_key: Optional[str]) -> str:
+    if api_key is None or api_key not in API_KEYS:
+        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+    return API_KEYS[api_key]
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "healthy", "service": "gateway"}
+
+
+@app.post("/v1/complete", response_model=CompletionResponse)
+async def complete(
+    req: CompletionRequest,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    x_request_id: Optional[str] = Header(default=None, alias="X-Request-Id"),
+) -> CompletionResponse:
+    tenant = _auth(x_api_key)
+    # Override tenant_id from the authenticated principal, not from the body.
+    authoritative = req.model_copy(update={"tenant_id": tenant})
+
+    trace_id = x_request_id or str(uuid.uuid4())
+    log_event(log, "incoming_request", trace_id=trace_id, tenant=tenant)
+
+    assert _http is not None
+    r = await _http.post(
+        f"{settings.router_url}/complete",
+        json=authoritative.model_dump(),
+        headers={"X-Request-Id": trace_id},
+    )
+    if r.status_code != 200:
+        detail = r.json().get("detail", "router error") if _is_json(r) else "router error"
+        raise HTTPException(status_code=r.status_code, detail=detail)
+    body = r.json()
+    log_event(
+        log,
+        "completion_served",
+        trace_id=trace_id,
+        tenant=tenant,
+        provider=body.get("provider"),
+        model=body.get("model"),
+        latency_ms=body.get("latency_ms"),
+        total_tokens=body.get("total_tokens"),
+        estimated_cost_usd=body.get("estimated_cost_usd"),
+        fallback_used=body.get("fallback_used"),
+    )
+    return CompletionResponse(**body)
+@app.get("/v1/cost/summary", response_model=CostSummary)
+async def cost_summary(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> CostSummary:
+    tenant = _auth(x_api_key)
+    assert _http is not None
+    r = await _http.get(f"{settings.cost_tracker_url}/summary/{tenant}")
+    r.raise_for_status()
+    return CostSummary(**r.json())
+
+
+@app.get("/v1/system/health")
+async def system_health() -> dict:
+    """Aggregate health view: proxies to the health monitor snapshot."""
+    assert _http is not None
+    try:
+        r = await _http.get(f"{settings.health_monitor_url}/snapshot")
+        snapshot = r.json() if r.status_code == 200 else {}
+    except Exception:
+        snapshot = {}
+    return {"providers": snapshot}
+
+
+@app.get("/v1/system/registry")
+async def system_registry() -> dict:
+    """Passthrough to router provider registry (admin / dashboard)."""
+    assert _http is not None
+    try:
+        r = await _http.get(f"{settings.router_url}/providers/registry")
+        if r.status_code != 200:
+            return {"providers": [], "providers_active": 0, "providers_total": 0, "stale_names": []}
+        return r.json() if _is_json(r) else {}
+    except Exception:
+        return {"providers": [], "providers_active": 0, "providers_total": 0, "stale_names": []}
+
+
+class AdminForceFailBody(BaseModel):
+    fail: bool = True
+
+
+@app.post("/v1/admin/providers/{name}/force_fail")
+async def admin_provider_force_fail(
+    name: str,
+    body: AdminForceFailBody,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    """Authenticated gateway proxy for demo mock fault injection.
+
+    The browser can reach the gateway in cloud deployments, while provider admin
+    ports remain private inside the backend container.
+    """
+    _auth(x_api_key)
+    assert _http is not None
+    r = await _http.post(
+        f"{settings.router_url}/admin/providers/{name}/force_fail",
+        json=body.model_dump(),
+    )
+    detail = r.json() if _is_json(r) else {"detail": "router error"}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=detail.get("detail", detail))
+    return detail
+
+
+@app.get("/v1/system/feedback-metrics")
+async def system_feedback_metrics() -> dict:
+    """Passthrough to router in-process completion EMA metrics."""
+    assert _http is not None
+    try:
+        r = await _http.get(f"{settings.router_url}/feedback")
+        if r.status_code != 200:
+            return {}
+        return r.json() if _is_json(r) else {}
+    except Exception:
+        return {}
+
+
+@app.get("/v1/system/daily-quotas")
+async def system_daily_quotas() -> dict:
+    """Passthrough to router daily quota snapshot for admin Overview."""
+    assert _http is not None
+    try:
+        r = await _http.get(f"{settings.router_url}/admin/daily-quotas")
+        if r.status_code != 200:
+            return {
+                "quotas_enabled": False,
+                "entries": [],
+                "leader": None,
+                "empty_reason": "error",
+            }
+        return r.json() if _is_json(r) else {}
+    except Exception:
+        return {
+            "quotas_enabled": False,
+            "entries": [],
+            "leader": None,
+            "empty_reason": "error",
+        }
+
+
+@app.post("/v1/feedback")
+async def submit_feedback(
+    body: dict,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    payload = dict(body or {})
+    payload["tenant_id"] = tenant
+    assert _http is not None
+    r = await _http.post(f"{settings.router_url}/feedback/submit", json=payload)
+    detail = r.json() if _is_json(r) else {"detail": "router error"}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=detail.get("detail", detail))
+    return detail
+
+
+@app.get("/v1/feedback/recent")
+async def feedback_recent(
+    limit: int = 100,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    assert _http is not None
+    r = await _http.get(
+        f"{settings.router_url}/feedback/recent",
+        params={"tenant_id": tenant, "limit": limit},
+    )
+    if r.status_code != 200:
+        detail = r.json().get("detail", "router error") if _is_json(r) else "router error"
+        raise HTTPException(status_code=r.status_code, detail=detail)
+    return r.json()
+
+
+@app.get("/v1/feedback/summary")
+async def feedback_summary(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    assert _http is not None
+    r = await _http.get(
+        f"{settings.router_url}/feedback/summary",
+        params={"tenant_id": tenant},
+    )
+    if r.status_code != 200:
+        detail = r.json().get("detail", "router error") if _is_json(r) else "router error"
+        raise HTTPException(status_code=r.status_code, detail=detail)
+    return r.json()
+
+
+@app.post("/v1/feedback/analyze")
+async def feedback_analyze(
+    body: Optional[dict] = None,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> dict:
+    tenant = _auth(x_api_key)
+    payload = dict(body or {})
+    payload["tenant_id"] = tenant
+    assert _http is not None
+    r = await _http.post(f"{settings.router_url}/feedback/analyze", json=payload)
+    detail = r.json() if _is_json(r) else {"detail": "router error"}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=detail.get("detail", detail))
+    return detail
+
+
+def _is_json(r: httpx.Response) -> bool:
+    ct = r.headers.get("content-type", "")
+    return "application/json" in ct
