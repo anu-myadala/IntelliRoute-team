@@ -32,6 +32,7 @@ IntelliRoute sits between client applications and LLM providers (OpenAI, Anthrop
 8. [Configuration](#configuration)
 9. [Team contributions](#team-contributions)
 10. [What is intentionally simplified](#what-is-intentionally-simplified)
+11. [Feature test coverage](#feature-test-coverage)
 
 ---
 
@@ -76,34 +77,38 @@ IntelliRoute sits between client applications and LLM providers (OpenAI, Anthrop
 
 Eleven processes total: 5 platform services (gateway, router, cost tracker, health monitor) + 3 rate-limiter replicas + 3 mock providers + 1 static HTTP server for the frontend.
 
-| Service        | Port(s)             | Responsibility                                                        |
-|----------------|---------------------|-----------------------------------------------------------------------|
-| Gateway        | 8000                | Public entry point, API-key auth, request tracing                     |
-| Router         | 8001                | Intent classification, multi-objective ranking, fallback, queue, brownout |
-| Rate Limiter   | 8002 / 8012 / 8022  | Distributed token-bucket; leader-elected; replication log             |
-| Cost Tracker   | 8003                | Async cost events; tenant/team/workflow rollups; budget alerts        |
-| Health Monitor | 8004                | Per-provider circuit breakers; periodic liveness polling              |
-| Mock Providers | 9001 / 9002 / 9003  | Three simulated upstream LLMs; configurable latency/cost/failure      |
-| Frontend       | 3000                | Static HTML/JS dashboard served via `python -m http.server`           |
+
+| Service        | Port(s)            | Responsibility                                                            |
+| -------------- | ------------------ | ------------------------------------------------------------------------- |
+| Gateway        | 8000               | Public entry point, API-key auth, request tracing                         |
+| Router         | 8001               | Intent classification, multi-objective ranking, fallback, queue, brownout |
+| Rate Limiter   | 8002 / 8012 / 8022 | Distributed token-bucket; leader-elected; replication log                 |
+| Cost Tracker   | 8003               | Async cost events; tenant/team/workflow rollups; budget alerts            |
+| Health Monitor | 8004               | Per-provider circuit breakers; periodic liveness polling                  |
+| Mock Providers | 9001 / 9002 / 9003 | Three simulated upstream LLMs; configurable latency/cost/failure          |
+| Frontend       | 3000               | Static HTML/JS dashboard served via `python -m http.server`               |
+
 
 ## Distributed-systems concepts demonstrated
 
-| Course topic                       | Where it lives in IntelliRoute                                                                           |
-|------------------------------------|----------------------------------------------------------------------------------------------------------|
-| Service discovery / naming         | `intelliroute/router/registry.py` — bootstrap + dynamic leases; in-memory analogue of Consul/etcd        |
-| Lease-based liveness               | Mock providers self-register and call `POST /providers/heartbeat`; expired leases mark providers stale   |
-| Communication: sync + async        | HTTP between gateway/router/limiter; fire-and-forget async cost events to the cost tracker               |
-| Coordination & leader election     | `intelliroute/rate_limiter/election.py` — bully-style election across 3 replicas; followers forward writes |
-| Replication & consistency          | Strong consistency for rate-limit decisions (single leader; opt-in fail-closed mode); eventual via replication log |
-| Fault tolerance                    | `intelliroute/health_monitor/circuit_breaker.py` (3-state breaker) + router fallback chain               |
-| Adaptive retry / back-off          | SLA-aware jittered exponential back-off in `intelliroute/router/main.py::_error_backoff_ms`              |
-| Backpressure & queueing            | `intelliroute/router/queue.py` priority queue + 4 worker tasks; load shedding above configured depth     |
-| Graceful degradation / brownout    | `intelliroute/router/brownout.py` — global + per-tenant brownout based on queue, p95, error/timeout rate |
-| Multi-objective optimisation       | `intelliroute/router/policy.py` + `policy_engine/` — latency × cost × capability × success scoring       |
-| Online learning                    | `intelliroute/router/weight_tuner.py` rebalances per-intent weights from observed sub-score outcomes     |
-| Budget governance                  | `intelliroute/cost_tracker/accounting.py` — tenant / team / workflow budgets, premium caps, alerts       |
-| Security                           | API-key auth at the gateway; tenant identity rewritten from the authenticated principal, not the body    |
-| Observability                      | `intelliroute/common/logging.py` JSON logger; `/snapshot`, `/stats`, `/traces` endpoints; X-Request-Id   |
+
+| Course topic                    | Where it lives in IntelliRoute                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Service discovery / naming      | `intelliroute/router/registry.py` — bootstrap + dynamic leases; in-memory analogue of Consul/etcd                  |
+| Lease-based liveness            | Mock providers self-register and call `POST /providers/heartbeat`; expired leases mark providers stale             |
+| Communication: sync + async     | HTTP between gateway/router/limiter; fire-and-forget async cost events to the cost tracker                         |
+| Coordination & leader election  | `intelliroute/rate_limiter/election.py` — bully-style election across 3 replicas; followers forward writes         |
+| Replication & consistency       | Strong consistency for rate-limit decisions (single leader; opt-in fail-closed mode); eventual via replication log |
+| Fault tolerance                 | `intelliroute/health_monitor/circuit_breaker.py` (3-state breaker) + router fallback chain                         |
+| Adaptive retry / back-off       | SLA-aware jittered exponential back-off in `intelliroute/router/main.py::_error_backoff_ms`                        |
+| Backpressure & queueing         | `intelliroute/router/queue.py` priority queue + 4 worker tasks; load shedding above configured depth               |
+| Graceful degradation / brownout | `intelliroute/router/brownout.py` — global + per-tenant brownout based on queue, p95, error/timeout rate           |
+| Multi-objective optimisation    | `intelliroute/router/policy.py` + `policy_engine/` — latency × cost × capability × success scoring                 |
+| Online learning                 | `intelliroute/router/weight_tuner.py` rebalances per-intent weights from observed sub-score outcomes               |
+| Budget governance               | `intelliroute/cost_tracker/accounting.py` — tenant / team / workflow budgets, premium caps, alerts                 |
+| Security                        | API-key auth at the gateway; tenant identity rewritten from the authenticated principal, not the body              |
+| Observability                   | `intelliroute/common/logging.py` JSON logger; `/snapshot`, `/stats`, `/traces` endpoints; X-Request-Id             |
+
 
 ---
 
@@ -130,13 +135,36 @@ The package metadata (`pyproject.toml`) declares all runtime + dev dependencies:
 PYTHONPATH=. python3 -m pytest tests/
 ```
 
-Expected: **`265 passed in ~12s`**. The suite includes 13 integration tests in [`tests/test_integration.py`](tests/test_integration.py) that spawn the full 10-process backend on ephemeral ports and exercise it over real HTTP — they're the single fastest way to confirm a fresh clone is healthy.
+Expected: **265 passed in ~12s**. The suite includes 13 integration tests in [`tests/test_integration.py`](tests/test_integration.py) that spawn the full 10-process backend on ephemeral ports and exercise it over real HTTP — they're the single fastest way to confirm a fresh clone is healthy.
 
 To skip the integration tests (faster iteration, no port allocation):
 
 ```bash
 PYTHONPATH=. python3 -m pytest tests/ --ignore=tests/test_integration.py
 ```
+### Feature test coverage
+
+IntelliRoute includes automated tests for the major features implemented in the project. The tests are located in the `tests/` directory and can be run with:
+
+```bash
+PYTHONPATH=. python3 -m pytest tests/
+```
+The suite verifies both individual subsystems through unit tests and full application behavior through end-to-end integration tests.
+
+| Feature / subsystem | What the tests verify | Test files |
+|---|---|---|
+| Intent classification | Verifies that requests are correctly classified as interactive, reasoning, batch, or code using hints and prompt content. | `tests/test_intent.py` |
+| Routing and provider selection | Verifies provider ranking, routing modes, policy rules, scoring behavior, fallback ordering, and routing decisions. | `tests/test_policy.py`, `tests/test_policy_engine.py`, `tests/test_router_routing_mode.py` |
+| Rate limiting | Verifies token-bucket capacity, refill behavior, bucket isolation, request allow/deny decisions, and replication-log behavior. | `tests/test_token_bucket.py` |
+| Leader election | Verifies the rate-limiter replica election flow, leader heartbeat handling, challenge/victory messages, and failover behavior. | `tests/test_election.py` |
+| Circuit breaker and health monitoring | Verifies closed/open/half-open circuit-breaker transitions, failure thresholds, cooldown recovery, and provider health state. | `tests/test_circuit_breaker.py` |
+| Brownout and queueing | Verifies overload detection, brownout state transitions, degraded-mode behavior, queue depth handling, and load-shedding behavior. | `tests/test_brownout.py`, `tests/test_queue.py` |
+| Cost tracking and budgets | Verifies tenant/team/workflow cost accounting, budget headroom checks, premium caps, budget alerts, and budget-scope models. | `tests/test_accounting.py`, `tests/test_models_budget_scopes.py` |
+| Feedback and observability | Verifies feedback metrics, latency EMA, success-rate EMA, anomaly detection, quality scoring, feedback storage, and router feedback APIs. | `tests/test_feedback.py`, `tests/test_feedback_previews_analysis.py`, `tests/test_user_feedback_store.py`, `tests/test_router_user_feedback_api.py` |
+| Mock providers and failover | Verifies mock provider behavior, forced failures, provider clients, retry behavior, and fallback routing. | `tests/test_provider_clients.py`, `tests/test_admin_force_fail_api.py`, `tests/test_provider_retry_logic.py` |
+| End-to-end integration | Verifies the full stack over real HTTP, including routing, provider registration, failover, rate limiting, cost tracking, feedback endpoints, queue stats, leader election, and brownout behavior. | `tests/test_integration.py` |
+
+This mapping shows that each major feature claimed by the project has corresponding automated test coverage.
 
 ### 3. Launch the stack
 
@@ -154,7 +182,7 @@ IntelliRoute stack running.
   Press Ctrl-C to stop.
 ```
 
-Open **http://127.0.0.1:3000** in any modern browser for the live dashboard (chat panel, provider health, routing visualization, leader election, cost tracker, queue/brownout state, traces, and feedback analytics).
+Open **[http://127.0.0.1:3000](http://127.0.0.1:3000)** in any modern browser for the live dashboard (chat panel, provider health, routing visualization, leader election, cost tracker, queue/brownout state, traces, and feedback analytics).
 
 ### 4. (Optional) Use real providers
 
@@ -175,13 +203,15 @@ The router will register the corresponding provider(s) at startup. Set `INTELLIR
 
 ### Troubleshooting
 
-| Symptom                                              | Fix                                                                                       |
-|------------------------------------------------------|-------------------------------------------------------------------------------------------|
-| `ModuleNotFoundError: intelliroute`                  | Prefix the command with `PYTHONPATH=.` and run from the repo root                         |
-| `Address already in use` when starting               | Something else is on 8000-8004, 8012, 8022, 9001-9003, or 3000. Free it (`lsof -nP -iTCP:8000`) or override with the env vars in [Configuration](#configuration) |
-| `Errno 48` on the frontend line                      | Port 3000 is busy. Run `INTELLIROUTE_FRONTEND_PORT=3005 PYTHONPATH=. python3 scripts/start_stack.py` |
-| Integration tests hang                               | Stale subprocesses from a previous run: `pkill -f "uvicorn intelliroute"`                 |
-| Tests pass but the stack won't start                 | Almost always a port collision: `lsof -nP -iTCP:8000-8004,8012,8022,9001-9003,3000`        |
+
+| Symptom                                | Fix                                                                                                                                                              |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ModuleNotFoundError: intelliroute`    | Prefix the command with `PYTHONPATH=.` and run from the repo root                                                                                                |
+| `Address already in use` when starting | Something else is on 8000-8004, 8012, 8022, 9001-9003, or 3000. Free it (`lsof -nP -iTCP:8000`) or override with the env vars in [Configuration](#configuration) |
+| `Errno 48` on the frontend line        | Port 3000 is busy. Run `INTELLIROUTE_FRONTEND_PORT=3005 PYTHONPATH=. python3 scripts/start_stack.py`                                                             |
+| Integration tests hang                 | Stale subprocesses from a previous run: `pkill -f "uvicorn intelliroute"`                                                                                        |
+| Tests pass but the stack won't start   | Almost always a port collision: `lsof -nP -iTCP:8000-8004,8012,8022,9001-9003,3000`                                                                              |
+
 
 ---
 
@@ -358,114 +388,128 @@ Below is the trimmed list — every service also exposes `GET /health` (liveness
 
 ### Gateway (`:8000`) — the only service clients should talk to
 
-| Method | Path                        | Description                                  |
-|--------|-----------------------------|----------------------------------------------|
-| POST   | `/v1/complete`              | Submit an LLM completion (X-API-Key header)  |
-| GET    | `/v1/cost/summary`          | Per-tenant cost rollup                       |
-| GET    | `/v1/system/health`         | Aggregate provider health snapshot           |
-| POST   | `/v1/feedback`              | Submit a thumbs-up/down on a completion      |
-| GET    | `/v1/feedback/recent`       | Recent feedback rows for the tenant          |
-| GET    | `/v1/feedback/summary`      | Tenant feedback aggregate                    |
-| POST   | `/v1/feedback/analyze`      | LLM-assisted analysis of recent feedback     |
+
+| Method | Path                   | Description                                 |
+| ------ | ---------------------- | ------------------------------------------- |
+| POST   | `/v1/complete`         | Submit an LLM completion (X-API-Key header) |
+| GET    | `/v1/cost/summary`     | Per-tenant cost rollup                      |
+| GET    | `/v1/system/health`    | Aggregate provider health snapshot          |
+| POST   | `/v1/feedback`         | Submit a thumbs-up/down on a completion     |
+| GET    | `/v1/feedback/recent`  | Recent feedback rows for the tenant         |
+| GET    | `/v1/feedback/summary` | Tenant feedback aggregate                   |
+| POST   | `/v1/feedback/analyze` | LLM-assisted analysis of recent feedback    |
+
 
 ### Router (`:8001`)
 
-| Method | Path                          | Description                                                 |
-|--------|-------------------------------|-------------------------------------------------------------|
-| POST   | `/complete`                   | Internal: full routing + fallback execution                 |
+
+| Method | Path                          | Description                                                   |
+| ------ | ----------------------------- | ------------------------------------------------------------- |
+| POST   | `/complete`                   | Internal: full routing + fallback execution                   |
 | POST   | `/decide`                     | Introspection: returns the routing decision without executing |
-| GET    | `/providers`                  | Currently routable providers (active leases only)           |
-| POST   | `/providers`                  | Bootstrap-style provider registration                       |
-| POST   | `/providers/register`         | Lease-based dynamic registration                            |
-| POST   | `/providers/heartbeat`        | Refresh a provider's lease                                  |
-| GET    | `/providers/registry`         | Full registry incl. stale entries (debug/observability)     |
-| DELETE | `/providers/{name}`           | Deregister a provider                                       |
+| GET    | `/providers`                  | Currently routable providers (active leases only)             |
+| POST   | `/providers`                  | Bootstrap-style provider registration                         |
+| POST   | `/providers/register`         | Lease-based dynamic registration                              |
+| POST   | `/providers/heartbeat`        | Refresh a provider's lease                                    |
+| GET    | `/providers/registry`         | Full registry incl. stale entries (debug/observability)       |
+| DELETE | `/providers/{name}`           | Deregister a provider                                         |
 | GET    | `/feedback`                   | Per-provider EMA metrics (latency, success, anomaly, quality) |
-| GET    | `/queue/stats`                | Priority queue depth, shed count, timeouts                  |
-| GET    | `/brownout`                   | Global brownout state                                       |
-| GET    | `/brownout/{tenant_id}`       | Per-tenant brownout state                                   |
-| GET    | `/brownout/metrics`           | Global + per-tenant brownout metrics                        |
-| GET    | `/traces`                     | Last 50 completed request traces (ring buffer)              |
-| GET    | `/weights`                    | Current per-intent weights + tuner sample counts            |
-| POST   | `/weights/rebalance/{intent}` | Manually trigger a tuner rebalance                          |
-| GET    | `/routing/mode`               | Active routing policy                                       |
-| POST   | `/routing/mode`               | Switch routing policy (`intelliroute`, `round_robin`, …)    |
+| GET    | `/queue/stats`                | Priority queue depth, shed count, timeouts                    |
+| GET    | `/brownout`                   | Global brownout state                                         |
+| GET    | `/brownout/{tenant_id}`       | Per-tenant brownout state                                     |
+| GET    | `/brownout/metrics`           | Global + per-tenant brownout metrics                          |
+| GET    | `/traces`                     | Last 50 completed request traces (ring buffer)                |
+| GET    | `/weights`                    | Current per-intent weights + tuner sample counts              |
+| POST   | `/weights/rebalance/{intent}` | Manually trigger a tuner rebalance                            |
+| GET    | `/routing/mode`               | Active routing policy                                         |
+| POST   | `/routing/mode`               | Switch routing policy (`intelliroute`, `round_robin`, …)      |
+
 
 ### Rate Limiter (`:8002` / `:8012` / `:8022`)
 
-| Method | Path                                | Description                                                |
-|--------|-------------------------------------|------------------------------------------------------------|
-| POST   | `/check`                            | Try to consume tokens for `(tenant, provider)`             |
-| POST   | `/config` / `/config/tenant` / `/config/provider` / `/config/tenant-provider` | Update bucket capacity & refill at any granularity |
-| GET    | `/config/resolve/{tenant}/{provider}` | Show which bucket config a key resolves to + source level |
-| GET    | `/leader`                           | Current leader (from store)                                |
-| GET    | `/election/status`                  | This replica's election state                              |
-| POST   | `/election/{challenge,victory,heartbeat}` | Bully-protocol message handlers                       |
-| GET    | `/log` / `/log/since/{offset}`      | Replication log (full / incremental for follower replay)   |
+
+| Method | Path                                                                          | Description                                               |
+| ------ | ----------------------------------------------------------------------------- | --------------------------------------------------------- |
+| POST   | `/check`                                                                      | Try to consume tokens for `(tenant, provider)`            |
+| POST   | `/config` / `/config/tenant` / `/config/provider` / `/config/tenant-provider` | Update bucket capacity & refill at any granularity        |
+| GET    | `/config/resolve/{tenant}/{provider}`                                         | Show which bucket config a key resolves to + source level |
+| GET    | `/leader`                                                                     | Current leader (from store)                               |
+| GET    | `/election/status`                                                            | This replica's election state                             |
+| POST   | `/election/{challenge,victory,heartbeat}`                                     | Bully-protocol message handlers                           |
+| GET    | `/log` / `/log/since/{offset}`                                                | Replication log (full / incremental for follower replay)  |
+
 
 ### Cost Tracker (`:8003`)
 
-| Method | Path                            | Description                                                  |
-|--------|---------------------------------|--------------------------------------------------------------|
-| POST   | `/events`                       | Publish a cost event (fire-and-forget from the router)       |
-| GET    | `/summary/{tenant_id}`          | Per-tenant rollup                                            |
-| GET    | `/summary/team/{team_id}` / `/summary/workflow/{workflow_id}` | Team / workflow rollups          |
-| POST   | `/budget` / `/budget/team` / `/budget/workflow` | Set tenant / team / workflow budgets         |
-| POST   | `/budget/team/premium-cap`      | Cap a team's spend on premium-tier providers                 |
-| GET    | `/budget/{tenant_id}/headroom`  | Remaining budget                                             |
-| GET    | `/budget/{tenant_id}/check?projected_cost_usd=…` | Pre-call budget check                       |
-| GET    | `/alerts`                       | Budget-exceeded alerts                                       |
-| GET    | `/history/{tenant_id}`          | Paginated raw cost-event history                             |
+
+| Method | Path                                                          | Description                                            |
+| ------ | ------------------------------------------------------------- | ------------------------------------------------------ |
+| POST   | `/events`                                                     | Publish a cost event (fire-and-forget from the router) |
+| GET    | `/summary/{tenant_id}`                                        | Per-tenant rollup                                      |
+| GET    | `/summary/team/{team_id}` / `/summary/workflow/{workflow_id}` | Team / workflow rollups                                |
+| POST   | `/budget` / `/budget/team` / `/budget/workflow`               | Set tenant / team / workflow budgets                   |
+| POST   | `/budget/team/premium-cap`                                    | Cap a team's spend on premium-tier providers           |
+| GET    | `/budget/{tenant_id}/headroom`                                | Remaining budget                                       |
+| GET    | `/budget/{tenant_id}/check?projected_cost_usd=…`              | Pre-call budget check                                  |
+| GET    | `/alerts`                                                     | Budget-exceeded alerts                                 |
+| GET    | `/history/{tenant_id}`                                        | Paginated raw cost-event history                       |
+
 
 ### Health Monitor (`:8004`)
 
-| Method | Path                  | Description                                  |
-|--------|-----------------------|----------------------------------------------|
-| POST   | `/register`           | Register a provider URL for periodic polling |
-| POST   | `/report/{provider}`  | Router pushes success/failure outcomes       |
-| GET    | `/snapshot`           | All breaker states (also advances OPEN→HALF_OPEN cooldowns) |
-| GET    | `/snapshot/{provider}`| Per-provider breaker state                   |
+
+| Method | Path                   | Description                                                 |
+| ------ | ---------------------- | ----------------------------------------------------------- |
+| POST   | `/register`            | Register a provider URL for periodic polling                |
+| POST   | `/report/{provider}`   | Router pushes success/failure outcomes                      |
+| GET    | `/snapshot`            | All breaker states (also advances OPEN→HALF_OPEN cooldowns) |
+| GET    | `/snapshot/{provider}` | Per-provider breaker state                                  |
+
 
 ### Mock Providers (`:9001` / `:9002` / `:9003`)
 
-| Method | Path                       | Description                                            |
-|--------|----------------------------|--------------------------------------------------------|
-| POST   | `/v1/chat`                 | Simulated LLM completion                               |
-| POST   | `/admin/force_fail`        | Return HTTP 503 on every request                       |
-| POST   | `/admin/force_timeout`     | Hang every request (exercises router timeout handling) |
-| POST   | `/admin/force_rate_limit`  | Return HTTP 429 with `Retry-After`                     |
-| POST   | `/admin/force_malformed`   | Return HTTP 200 with broken JSON                       |
-| POST   | `/admin/reset`             | Clear all fault-injection flags                        |
-| GET    | `/admin/state`             | Inspect current fault flags                            |
+
+| Method | Path                      | Description                                            |
+| ------ | ------------------------- | ------------------------------------------------------ |
+| POST   | `/v1/chat`                | Simulated LLM completion                               |
+| POST   | `/admin/force_fail`       | Return HTTP 503 on every request                       |
+| POST   | `/admin/force_timeout`    | Hang every request (exercises router timeout handling) |
+| POST   | `/admin/force_rate_limit` | Return HTTP 429 with `Retry-After`                     |
+| POST   | `/admin/force_malformed`  | Return HTTP 200 with broken JSON                       |
+| POST   | `/admin/reset`            | Clear all fault-injection flags                        |
+| GET    | `/admin/state`            | Inspect current fault flags                            |
+
 
 ## Configuration
 
 Every service reads its configuration from environment variables; defaults live in [`intelliroute/common/config.py`](intelliroute/common/config.py). The most useful ones:
 
-| Variable                                              | Default                              | Purpose                                 |
-|-------------------------------------------------------|--------------------------------------|-----------------------------------------|
-| `INTELLIROUTE_HOST`                                   | `127.0.0.1`                          | Bind host                               |
-| `INTELLIROUTE_GATEWAY_PORT`                           | `8000`                               | Gateway port                            |
-| `INTELLIROUTE_ROUTER_PORT`                            | `8001`                               | Router port                             |
-| `INTELLIROUTE_RATE_LIMITER_PORT[_1,_2]`               | `8002`, `8012`, `8022`               | Three rate-limiter replicas             |
-| `INTELLIROUTE_COST_TRACKER_PORT`                      | `8003`                               |                                         |
-| `INTELLIROUTE_HEALTH_MONITOR_PORT`                    | `8004`                               |                                         |
-| `INTELLIROUTE_MOCK_FAST_PORT` / `_SMART_PORT` / `_CHEAP_PORT` | `9001` / `9002` / `9003`     | Mock provider ports                     |
-| `INTELLIROUTE_FRONTEND_PORT`                          | `3000`                               | Static dashboard                        |
-| `INTELLIROUTE_DEMO_KEY`                               | `demo-key-123`                       | Demo API key → `demo-tenant`            |
-| `INTELLIROUTE_PROVIDER_MODE`                          | `auto`                               | `auto` / `mock_only` / `external_only` / `hybrid` |
-| `INTELLIROUTE_USE_MOCKS`                              | `0`                                  | If `1`, force mock-only routing         |
-| `GROQ_API_KEY` / `GEMINI_API_KEY`                     | *(empty)*                            | Live provider keys (in `.env` or shell) |
-| `INTELLIROUTE_GROQ_MODEL` / `INTELLIROUTE_GEMINI_MODEL` | `llama-3.3-70b-versatile` / `gemini-2.5-flash` | Per-provider model id     |
-| `INTELLIROUTE_PROVIDER_TIMEOUT_S`                     | `30`                                 | Per-call upstream timeout (seconds)     |
-| `INTELLIROUTE_MOCK_REGISTRATION`                      | `hybrid`                             | `legacy` / `hybrid` / `dynamic` — controls mock self-registration |
-| `INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS`             | `30`                                 | Dynamic-registration lease TTL          |
-| `INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS`    | `8`                                  | Mock heartbeat interval                 |
-| `INTELLIROUTE_ROUTING_MODE`                           | `intelliroute`                       | Initial routing mode                    |
-| `INTELLIROUTE_ENABLE_PROVIDER_DAILY_QUOTAS`           | `0`                                  | Turn on per-provider UTC daily caps     |
-| `RATE_LIMITER_REPLICA_ID` / `RATE_LIMITER_PEERS`      | `rl-0` / 3-peer cluster              | Per-replica election identity           |
-| `RATE_LIMITER_STRONG_CONSISTENCY`                     | `0`                                  | If `1`, followers fail closed when forwarding fails |
-| `INTELLIROUTE_USER_FEEDBACK_DB_PATH`                  | `artifacts/user_feedback.sqlite3`    | SQLite path for user feedback           |
+
+| Variable                                                      | Default                                        | Purpose                                                           |
+| ------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------- |
+| `INTELLIROUTE_HOST`                                           | `127.0.0.1`                                    | Bind host                                                         |
+| `INTELLIROUTE_GATEWAY_PORT`                                   | `8000`                                         | Gateway port                                                      |
+| `INTELLIROUTE_ROUTER_PORT`                                    | `8001`                                         | Router port                                                       |
+| `INTELLIROUTE_RATE_LIMITER_PORT[_1,_2]`                       | `8002`, `8012`, `8022`                         | Three rate-limiter replicas                                       |
+| `INTELLIROUTE_COST_TRACKER_PORT`                              | `8003`                                         |                                                                   |
+| `INTELLIROUTE_HEALTH_MONITOR_PORT`                            | `8004`                                         |                                                                   |
+| `INTELLIROUTE_MOCK_FAST_PORT` / `_SMART_PORT` / `_CHEAP_PORT` | `9001` / `9002` / `9003`                       | Mock provider ports                                               |
+| `INTELLIROUTE_FRONTEND_PORT`                                  | `3000`                                         | Static dashboard                                                  |
+| `INTELLIROUTE_DEMO_KEY`                                       | `demo-key-123`                                 | Demo API key → `demo-tenant`                                      |
+| `INTELLIROUTE_PROVIDER_MODE`                                  | `auto`                                         | `auto` / `mock_only` / `external_only` / `hybrid`                 |
+| `INTELLIROUTE_USE_MOCKS`                                      | `0`                                            | If `1`, force mock-only routing                                   |
+| `GROQ_API_KEY` / `GEMINI_API_KEY`                             | *(empty)*                                      | Live provider keys (in `.env` or shell)                           |
+| `INTELLIROUTE_GROQ_MODEL` / `INTELLIROUTE_GEMINI_MODEL`       | `llama-3.3-70b-versatile` / `gemini-2.5-flash` | Per-provider model id                                             |
+| `INTELLIROUTE_PROVIDER_TIMEOUT_S`                             | `30`                                           | Per-call upstream timeout (seconds)                               |
+| `INTELLIROUTE_MOCK_REGISTRATION`                              | `hybrid`                                       | `legacy` / `hybrid` / `dynamic` — controls mock self-registration |
+| `INTELLIROUTE_PROVIDER_LEASE_TTL_SECONDS`                     | `30`                                           | Dynamic-registration lease TTL                                    |
+| `INTELLIROUTE_PROVIDER_HEARTBEAT_INTERVAL_SECONDS`            | `8`                                            | Mock heartbeat interval                                           |
+| `INTELLIROUTE_ROUTING_MODE`                                   | `intelliroute`                                 | Initial routing mode                                              |
+| `INTELLIROUTE_ENABLE_PROVIDER_DAILY_QUOTAS`                   | `0`                                            | Turn on per-provider UTC daily caps                               |
+| `RATE_LIMITER_REPLICA_ID` / `RATE_LIMITER_PEERS`              | `rl-0` / 3-peer cluster                        | Per-replica election identity                                     |
+| `RATE_LIMITER_STRONG_CONSISTENCY`                             | `0`                                            | If `1`, followers fail closed when forwarding fails               |
+| `INTELLIROUTE_USER_FEEDBACK_DB_PATH`                          | `artifacts/user_feedback.sqlite3`              | SQLite path for user feedback                                     |
+
 
 `scripts/start_stack.py` sets the most important variables automatically — including the per-mock public ports needed for hybrid registration and the 3-peer cluster topology for the rate limiter.
 
